@@ -1,6 +1,10 @@
 # AIToYolo GUI
 
-该目录包含一个基于 PySide6 的 YOLO 图形界面 `yoloGui.py`，用于方便地配置与运行 YOLO 训练/推理（支持 YOLOv8、YOLOv11、YOLOv26）。
+2025年底大模型最佳实践竟然是代码生成。于是也尝试经过烧token的模式构建了该程序，算是自己第一个用AI生成的程序。该程序基于 PySide6 的 YOLO 图形界面 `yoloGui.py`，用于方便地配置与运行 YOLO 训练/推理（支持 YOLOv8、YOLOv11、YOLOv26）。
+
+![alt text](image.png)
+![alt text](image-1.png)
+![alt text](image-2.png)
 
 - 主要文件
   - `yoloGui.py` — 主 GUI 实现，包含训练线程 `YOLOTrainingThread` 与界面控件。
