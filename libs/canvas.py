@@ -60,6 +60,9 @@ class Canvas(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
         self.verified = False
         self.draw_square = False
+        # 当用户在第一次点击时按下了矩形模式（例如按住 Ctrl），
+        # 即使在第二次点击前释放 Ctrl 也应保持矩形模式直到 finalise()。
+        self._drawing_rect_mode = False
         self.pan_initial_pos = QPoint()
 
         # Initialise action states.
@@ -117,6 +120,12 @@ class Canvas(QWidget):
         # PySide6: ev.position() 返回 QPointF
         pos = self.transform_pos(ev.position())
 
+        # DEBUG: log mouse move state
+        try:
+            print(f"[CANVAS][mouseMoveEvent] pos=({pos.x():.1f},{pos.y():.1f}) draw_square={self.draw_square} _drawing_rect_mode={self._drawing_rect_mode} current_points={len(self.current.points) if self.current else 0}")
+        except Exception:
+            print(f"[CANVAS][mouseMoveEvent] pos=({pos.x():.1f},{pos.y():.1f})")
+
         # Update coordinates in main window
         window = self.parent().window()
         if hasattr(window, 'label_coordinates'):
@@ -126,33 +135,33 @@ class Canvas(QWidget):
         if self.drawing():
             self.override_cursor(CURSOR_DRAW)
             if self.current:
-                # Display annotation width and height while drawing
-                current_width = abs(self.current[0].x() - pos.x())
-                current_height = abs(self.current[0].y() - pos.y())
-                if hasattr(window, 'label_coordinates'):
-                    window.label_coordinates.setText(
-                        f'Width: {current_width:.0f}, Height: {current_height:.0f} / X: {pos.x():.0f}; Y: {pos.y():.0f}')
-
+                # For rectangle mode, show width and height
+                if (self.draw_square or self._drawing_rect_mode) and len(self.current.points) > 0:
+                    current_width = abs(self.current.points[0].x() - pos.x())
+                    current_height = abs(self.current.points[0].y() - pos.y())
+                    if hasattr(window, 'label_coordinates'):
+                        window.label_coordinates.setText(
+                            f'Width: {current_width:.0f}, Height: {current_height:.0f} / X: {pos.x():.0f}; Y: {pos.y():.0f}')
+                
                 color = self.drawing_line_color
                 if self.out_of_pixmap(pos):
                     # Don't allow the user to draw outside the pixmap.
                     # Project the point to the pixmap's boundaries.
-                    pos = self.intersection_point(self.current[-1], pos)
-                elif len(self.current) > 1 and self.close_enough(pos, self.current[0]):
+                    if len(self.current.points) > 0:
+                        pos = self.intersection_point(self.current.points[-1], pos)
+                elif len(self.current.points) > 1 and self.close_enough(pos, self.current.points[0]):
                     # Attract line to starting point and colorise to alert the user:
-                    pos = self.current[0]
+                    pos = self.current.points[0]
                     color = self.current.line_color
                     self.override_cursor(CURSOR_POINT)
                     self.current.highlight_vertex(0, Shape.NEAR_VERTEX)
 
-                if self.draw_square:
-                    init_pos = self.current[0]
-                    min_x = init_pos.x()
-                    min_y = init_pos.y()
-                    min_size = min(abs(pos.x() - min_x), abs(pos.y() - min_y))
-                    direction_x = -1 if pos.x() - min_x < 0 else 1
-                    direction_y = -1 if pos.y() - min_y < 0 else 1
-                    self.line[1] = QPointF(min_x + direction_x * min_size, min_y + direction_y * min_size)
+                # Update preview line for rectangle mode. 这里使用临时状态
+                # `_drawing_rect_mode` 以保证在两次点击之间即使释放 modifier
+                # 也能保持矩形预览行为。
+                if self.draw_square or self._drawing_rect_mode:
+                    self.line[0] = self.current.points[0]
+                    self.line[1] = pos
                 else:
                     self.line[1] = pos
 
@@ -232,8 +241,21 @@ class Canvas(QWidget):
         # PySide6: ev.position()
         pos = self.transform_pos(ev.position())
 
+        # DEBUG: log mouse press
+        mods = ev.modifiers()
+        try:
+            mods_val = int(mods)
+        except Exception:
+            mods_val = 0
+        print(f"[CANVAS][mousePressEvent] button={ev.button()} pos=({pos.x():.1f},{pos.y():.1f}) draw_square={self.draw_square} _drawing_rect_mode={self._drawing_rect_mode} current_exists={self.current is not None} mods={mods_val}")
+
         if ev.button() == Qt.MouseButton.LeftButton:
             if self.drawing():
+                # If Ctrl is held at the moment of click, treat this as rectangle start.
+                if mods & Qt.KeyboardModifier.ControlModifier:
+                    # Temporarily enable rectangle drawing mode for this interaction.
+                    self._drawing_rect_mode = True
+                    print("[CANVAS][mousePressEvent] Ctrl detected -> enabling _drawing_rect_mode")
                 self.handle_drawing(pos)
             else:
                 selection = self.select_shape_point(pos)
@@ -267,11 +289,54 @@ class Canvas(QWidget):
                 QApplication.restoreOverrideCursor()
 
     def handle_drawing(self, pos):
+        # Rectangle mode: 2-click drawing (first point, then second point)
+        print(f"[CANVAS][handle_drawing] pos=({pos.x():.1f},{pos.y():.1f}) draw_square={self.draw_square} _drawing_rect_mode={self._drawing_rect_mode} current_exists={self.current is not None}")
+
+        if self.draw_square or self._drawing_rect_mode:
+            if not self.current:
+                # First click: create shape and record first point
+                self.current = Shape()
+                self.current.add_point(pos)
+                self.line.points = [pos, pos]
+                # 锁定矩形模式直到 finalise()
+                self._drawing_rect_mode = True
+                self.set_hiding(False)
+                self.drawingPolygon.emit(True)
+                self.update()
+                return
+            else:
+                # Second click: complete the rectangle with 4 points
+                p1 = self.current.points[0]
+                p2 = pos
+                # Calculate rectangle corners
+                min_x = min(p1.x(), p2.x())
+                max_x = max(p1.x(), p2.x())
+                min_y = min(p1.y(), p2.y())
+                max_y = max(p1.y(), p2.y())
+                # Set all 4 corners
+                self.current.points = [
+                    QPointF(min_x, min_y),  # top-left
+                    QPointF(min_x, max_y),  # bottom-left
+                    QPointF(max_x, max_y),  # bottom-right
+                    QPointF(max_x, min_y)   # top-right
+                ]
+                self.finalise()
+                return
+        
+        # Polygon mode: multi-click drawing
         if self.current and self.current.reach_max_points() is False:
             target_pos = self.line[1]
             self.current.add_point(target_pos)
             self.line[0] = target_pos
-            if self.current.is_closed():
+            # 如果新添加的点与起点相同或足够接近，则视为闭合并 finalise()
+            if len(self.current.points) > 2 and (
+                    self.current.points[-1] == self.current.points[0] or
+                    self.close_enough(self.current.points[-1], self.current.points[0])):
+                # 强制使用相同起点以保证 finalise() 的第一项相等分支生效
+                self.current.points[-1] = self.current.points[0]
+                self.finalise()
+            elif self.current.reach_max_points():
+                # 达到最大点数（例如 4）也终止绘制
                 self.finalise()
         elif not self.out_of_pixmap(pos):
             self.current = Shape()
@@ -283,12 +348,12 @@ class Canvas(QWidget):
 
     def handle_right_click(self, pos, ev):
         if self.drawing():
-            if len(self.current) > 1:
+            if len(self.current.points) > 1:
                 self.current.pop_point()
-                self.line[0] = self.current[-1]
+                self.line[0] = self.current.points[-1]
                 self.line[1] = pos
                 self.repaint()
-            elif len(self.current) == 1:
+            elif len(self.current.points) == 1:
                 self.reset_all_lines()
                 self.drawingPolygon.emit(False)
 
@@ -429,14 +494,28 @@ class Canvas(QWidget):
                 shape.paint(p)
 
         if self.current:
-            self.current.paint(p)
-            self.line.paint(p)
+            # For rectangle mode, only draw the preview rect, not the polygon points
+            if not (self.draw_square or self._drawing_rect_mode):
+                self.current.paint(p)
+                self.line.paint(p)
 
         if self.selected_shape_copy:
             self.selected_shape_copy.paint(p)
 
-        # Paint rect
-        if self.current is not None and len(self.line) == 2:
+        # Paint rect preview (for rectangle mode)
+        if (self.draw_square or self._drawing_rect_mode) and self.current is not None and len(self.line) == 2:
+            left_top = self.line[0]
+            right_bottom = self.line[1]
+            rect_width = right_bottom.x() - left_top.x()
+            rect_height = right_bottom.y() - left_top.y()
+            p.setPen(self.drawing_rect_color)
+            brush = p.brush()
+            brush.setColor(self.drawing_rect_color)
+            brush.setStyle(Qt.BrushStyle.Dense7Pattern)
+            p.setBrush(brush)
+            p.drawRect(left_top.x(), left_top.y(), rect_width, rect_height)
+        elif self.current is not None and len(self.line) == 2 and not (self.draw_square or self._drawing_rect_mode):
+            # Paint rect for polygon mode (legacy)
             left_top = self.line[0]
             right_bottom = self.line[1]
             rect_width = right_bottom.x() - left_top.x()
@@ -489,6 +568,9 @@ class Canvas(QWidget):
             self.drawingPolygon.emit(False)
             self.update()
             return
+
+        # 绘制完成后，释放矩形临时模式标志
+        self._drawing_rect_mode = False
 
         self.current.close()
         self.shapes.append(self.current)
@@ -552,6 +634,8 @@ class Canvas(QWidget):
 
     def reset_all_lines(self):
         self.current = None
+        # 取消任何临时矩形模式
+        self._drawing_rect_mode = False
         self.drawingPolygon.emit(False)
         self.update()
 

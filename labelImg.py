@@ -969,9 +969,9 @@ class MainWindow(QMainWindow, WindowMixin):
         position MUST be in global coordinates.
         """
         if not self.use_default_label_checkbox.isChecked():
-            if len(self.label_hist) > 0:
-                self.label_dialog = LabelDialog(
-                    parent=self, list_item=self.label_hist)
+            # Always create LabelDialog, whether or not we have history
+            self.label_dialog = LabelDialog(
+                parent=self, list_item=self.label_hist)
 
             # Sync single class mode from PR#106
             if self.single_class_mode.isChecked() and self.lastLabel:
@@ -999,7 +999,9 @@ class MainWindow(QMainWindow, WindowMixin):
             if text not in self.label_hist:
                 self.label_hist.append(text)
         else:
-            # self.canvas.undoLastLine()
+            # User cancelled - remove the shape that was added
+            if len(self.canvas.shapes) > 0:
+                self.canvas.shapes.pop()
             self.canvas.reset_all_lines()
 
     def scroll_request(self, delta, orientation):
@@ -1546,7 +1548,7 @@ class MainWindow(QMainWindow, WindowMixin):
 
     def delete_image(self):
         """
-        Delete the current image file and update the file list.
+        Delete the current image file and its associated annotation files, then update the file list.
         After deletion, show the image at the same index (which is now the next image).
         """
         delete_path = self.file_path
@@ -1556,9 +1558,21 @@ class MainWindow(QMainWindow, WindowMixin):
         # Save the current index before deletion
         idx = self.cur_img_idx
         
-        # Delete the file
+        # Delete the image file
         if os.path.exists(delete_path):
             os.remove(delete_path)
+            
+            # Delete associated annotation files (YOLO .txt, Pascal VOC .xml, Create ML .json)
+            base_name = os.path.splitext(delete_path)[0]
+            annotation_extensions = ['.txt', '.xml', '.json']
+            
+            for ext in annotation_extensions:
+                annotation_path = base_name + ext
+                if os.path.exists(annotation_path):
+                    try:
+                        os.remove(annotation_path)
+                    except Exception as e:
+                        print(f"Failed to delete annotation file {annotation_path}: {str(e)}")
         
         # Update the image list by re-scanning the directory
         self.m_img_list = self.scan_all_images(self.last_open_dir)
