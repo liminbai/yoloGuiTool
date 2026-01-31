@@ -120,11 +120,7 @@ class Canvas(QWidget):
         # PySide6: ev.position() 返回 QPointF
         pos = self.transform_pos(ev.position())
 
-        # DEBUG: log mouse move state
-        try:
-            print(f"[CANVAS][mouseMoveEvent] pos=({pos.x():.1f},{pos.y():.1f}) draw_square={self.draw_square} _drawing_rect_mode={self._drawing_rect_mode} current_points={len(self.current.points) if self.current else 0}")
-        except Exception:
-            print(f"[CANVAS][mouseMoveEvent] pos=({pos.x():.1f},{pos.y():.1f})")
+        # (debug logs removed)
 
         # Update coordinates in main window
         window = self.parent().window()
@@ -241,13 +237,7 @@ class Canvas(QWidget):
         # PySide6: ev.position()
         pos = self.transform_pos(ev.position())
 
-        # DEBUG: log mouse press
         mods = ev.modifiers()
-        try:
-            mods_val = int(mods)
-        except Exception:
-            mods_val = 0
-        print(f"[CANVAS][mousePressEvent] button={ev.button()} pos=({pos.x():.1f},{pos.y():.1f}) draw_square={self.draw_square} _drawing_rect_mode={self._drawing_rect_mode} current_exists={self.current is not None} mods={mods_val}")
 
         if ev.button() == Qt.MouseButton.LeftButton:
             if self.drawing():
@@ -255,7 +245,6 @@ class Canvas(QWidget):
                 if mods & Qt.KeyboardModifier.ControlModifier:
                     # Temporarily enable rectangle drawing mode for this interaction.
                     self._drawing_rect_mode = True
-                    print("[CANVAS][mousePressEvent] Ctrl detected -> enabling _drawing_rect_mode")
                 self.handle_drawing(pos)
             else:
                 selection = self.select_shape_point(pos)
@@ -290,7 +279,7 @@ class Canvas(QWidget):
 
     def handle_drawing(self, pos):
         # Rectangle mode: 2-click drawing (first point, then second point)
-        print(f"[CANVAS][handle_drawing] pos=({pos.x():.1f},{pos.y():.1f}) draw_square={self.draw_square} _drawing_rect_mode={self._drawing_rect_mode} current_exists={self.current is not None}")
+        # (debug logs removed)
 
         if self.draw_square or self._drawing_rect_mode:
             if not self.current:

@@ -92,6 +92,9 @@ class MainWindow(QMainWindow, WindowMixin):
         self.default_save_dir = default_save_dir
         self.label_file_format = settings.get(SETTING_LABEL_FILE_FORMAT, LabelFileFormat.PASCAL_VOC)
 
+        # Store predefined classes file path for later use
+        self.predef_classes_file = default_prefdef_class_file
+
         # For loading all image under a directory
         self.m_img_list = []
         self.dir_name = None
@@ -116,7 +119,8 @@ class MainWindow(QMainWindow, WindowMixin):
             print("Not find:/data/predefined_classes.txt (optional)")
 
         # Main widgets and related state.
-        self.label_dialog = LabelDialog(parent=self, list_item=self.label_hist)
+        self.label_dialog = LabelDialog(parent=self, list_item=self.label_hist, 
+                                        predef_classes_file=self.predef_classes_file)
 
         self.items_to_shapes = {}
         self.shapes_to_items = {}
@@ -971,7 +975,8 @@ class MainWindow(QMainWindow, WindowMixin):
         if not self.use_default_label_checkbox.isChecked():
             # Always create LabelDialog, whether or not we have history
             self.label_dialog = LabelDialog(
-                parent=self, list_item=self.label_hist)
+                parent=self, list_item=self.label_hist, 
+                predef_classes_file=self.predef_classes_file)
 
             # Sync single class mode from PR#106
             if self.single_class_mode.isChecked() and self.lastLabel:
