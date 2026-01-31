@@ -1,10 +1,13 @@
 # AIToYolo GUI
 
-2025年底大模型最佳实践竟然是代码生成，于是就通过烧token的模式构建了自己的第一个应用程序。该程序基于 PySide6图形界面，搭建了一个可视化的yolo训练、训练监控、推理的一个简易应用，对于不喜欢命令行的朋友来说是个不错的选择，该程序主要支持（YOLOv8、YOLOv11、YOLOv26）这三个版本。
+2025年底大模型最佳实践竟然是代码生成，于是就通过烧token的模式构建基于Yolo的应用程序。
+1）先基于PySide6图形界面，搭建了一个可视化的yolo训练、训练监控、推理的一个简易应用，对于不喜欢命令行的朋友来说是个不错的选择，该程序主要支持（YOLOv8、YOLOv11、YOLOv26）这三个版本。
+2）PySide6图形界面将labelImg标注工具进行了重构，并修复了一些原生缺陷。
 
 ![alt text](image.png)
 ![alt text](image-1.png)
 ![alt text](image-2.png)
+![alt text](image-3.png)
 
 - 主要文件
   - `yoloGui.py` — 主 GUI 实现，包含训练线程 `YOLOTrainingThread` 与界面控件。
