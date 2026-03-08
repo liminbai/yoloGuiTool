@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QDialogButtonBox, QScrollArea
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QSize, QThread, QMetaObject, Q_ARG, Slot
-from PySide6.QtGui import QFont, QPalette, QColor, QIcon, QAction
+from PySide6.QtGui import QFont, QPalette, QColor, QIcon, QAction, QPixmap, QImage
 
 
 # ============================================
@@ -1919,6 +1919,576 @@ class YOLOInferenceWidget(QWidget):
 
 
 # ============================================
+# SAM3 推理线程
+# ============================================
+class SAM3InferenceThread(QThread):
+    """SAM3 推理线程"""
+    
+    # 定义信号
+    log_signal = Signal(str, str)  # 日志信号 (消息, 级别)
+    inference_complete_signal = Signal(bool, object)  # 推理完成信号 (成功, 结果)
+    progress_signal = Signal(int)  # 进度信号
+    
+    def __init__(self, model_path, image_path, device="cuda"):
+        super().__init__()
+        self.model_path = model_path
+        self.image_path = image_path
+        self.device = device
+        self.is_running = True
+        self.model = None
+        self.result = None
+    
+    def run(self):
+        """执行 SAM3 推理"""
+        try:
+            self.log_signal.emit(f"开始加载 SAM3 模型: {self.model_path}", "INFO")
+            self.progress_signal.emit(10)
+            
+            try:
+                # 尝试导入 SAM 相关库
+                from segment_anything import sam_model_registry, SamPredictor
+                import torch
+            except ImportError:
+                error_msg = "未找到 SAM3 依赖库，请安装: pip install segment-anything torch torchvision"
+                self.log_signal.emit(error_msg, "ERROR")
+                self.inference_complete_signal.emit(False, error_msg)
+                return
+            
+            # 加载模型
+            if not os.path.exists(self.model_path):
+                error_msg = f"模型文件不存在: {self.model_path}"
+                self.log_signal.emit(error_msg, "ERROR")
+                self.inference_complete_signal.emit(False, error_msg)
+                return
+            
+            self.log_signal.emit("正在加载模型...", "INFO")
+            self.progress_signal.emit(30)
+            
+            # 根据模型文件名确定模型类型
+            model_type = "vit_h"
+            if "vit_l" in self.model_path:
+                model_type = "vit_l"
+            elif "vit_b" in self.model_path:
+                model_type = "vit_b"
+            
+            sam = sam_model_registry[model_type](checkpoint=self.model_path)
+            sam.to(device=self.device)
+            self.model = SamPredictor(sam)
+            
+            self.log_signal.emit("模型加载成功", "SUCCESS")
+            self.progress_signal.emit(50)
+            
+            # 加载和处理图像
+            self.log_signal.emit(f"加载图像: {self.image_path}", "INFO")
+            image = cv2.imread(self.image_path)
+            if image is None:
+                error_msg = f"无法加载图像: {self.image_path}"
+                self.log_signal.emit(error_msg, "ERROR")
+                self.inference_complete_signal.emit(False, error_msg)
+                return
+            
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            
+            self.log_signal.emit("正在进行分割推理...", "INFO")
+            self.progress_signal.emit(70)
+            
+            # 设置图像用于推理
+            self.model.set_image(image_rgb)
+            
+            # 执行推理（自动分割）
+            # 这里使用默认参数进行全自动分割
+            masks, scores, logits = self.model.predict(
+                point_coords=None,
+                point_labels=None,
+                box=None,
+                multimask_output=False
+            )
+            
+            self.log_signal.emit(f"推理完成，获得 {len(masks)} 个掩码", "SUCCESS")
+            self.progress_signal.emit(90)
+            
+            # 处理结果
+            result_data = {
+                "image": image_rgb,
+                "masks": masks,
+                "scores": scores,
+                "logits": logits
+            }
+            
+            self.progress_signal.emit(100)
+            self.log_signal.emit("推理结果已准备就绪", "SUCCESS")
+            self.inference_complete_signal.emit(True, result_data)
+            
+        except Exception as e:
+            error_msg = f"推理失败: {str(e)}"
+            self.log_signal.emit(error_msg, "ERROR")
+            self.inference_complete_signal.emit(False, error_msg)
+    
+    def stop(self):
+        """停止推理线程"""
+        self.is_running = False
+
+
+# ============================================
+# SAM3 推理部件
+# ============================================
+class SAM3InferenceWidget(QWidget):
+    """SAM3 分割推理部件"""
+    
+    def __init__(self):
+        super().__init__()
+        self.image_path = None
+        self.result_data = None
+        self.inference_thread = None
+        self.init_ui()
+    
+    def init_ui(self):
+        """初始化用户界面"""
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # ========== 上部：配置区域 ==========
+        config_splitter = QSplitter(Qt.Orientation.Horizontal)
+        config_splitter.setCollapsible(0, False)
+        config_splitter.setCollapsible(1, False)
+        
+        # 左侧：图片上传和模型选择
+        upload_group = self._create_upload_group()
+        
+        # 右侧：参数配置
+        config_group = self._create_config_group()
+        
+        config_splitter.addWidget(upload_group)
+        config_splitter.addWidget(config_group)
+        config_splitter.setSizes([350, 450])
+        
+        main_layout.addWidget(config_splitter, stretch=0)
+        
+        # ========== 下部：结果显示 ==========
+        result_group = self._create_result_group()
+        main_layout.addWidget(result_group, stretch=1)
+        
+        self.setLayout(main_layout)
+    
+    def _create_upload_group(self):
+        """创建图片上传部分"""
+        upload_group = QGroupBox("📷 图片上传")
+        upload_group.setStyleSheet("font-size: 13px; color: #2c3e50;")
+        upload_group.setMinimumWidth(380)
+        upload_layout = QVBoxLayout()
+        upload_layout.setSpacing(8)
+        
+        self.image_label = QLabel("🖼️ 点击下方按钮选择图片\n\n支持格式: PNG, JPG, JPEG, BMP, WebP, GIF")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setMinimumSize(350, 250)
+        self.image_label.setStyleSheet("""
+            QLabel {
+                border: 2px dashed #3498db;
+                border-radius: 10px;
+                background-color: #f8f9fa;
+                color: #7f8c8d;
+                font-size: 12px;
+            }
+        """)
+        
+        # 按钮布局
+        btn_layout = QHBoxLayout()
+        
+        self.upload_btn = QPushButton("📂 选择图片")
+        self.upload_btn.setFixedHeight(40)
+        self.upload_btn.clicked.connect(self.upload_image)
+        
+        self.clear_btn = QPushButton("🗑️ 清除")
+        self.clear_btn.setFixedHeight(40)
+        self.clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                border: none;
+                padding: 8px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #c0392b;
+            }
+        """)
+        self.clear_btn.clicked.connect(self.clear_image)
+        
+        btn_layout.addWidget(self.upload_btn, stretch=2)
+        btn_layout.addWidget(self.clear_btn, stretch=1)
+        
+        self.image_path_label = QLabel("未选择图片")
+        self.image_path_label.setStyleSheet("color: #7f8c8d; font-size: 11px;")
+        self.image_path_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_path_label.setWordWrap(True)
+        
+        upload_layout.addWidget(self.image_label)
+        upload_layout.addLayout(btn_layout)
+        upload_layout.addWidget(self.image_path_label)
+        upload_group.setLayout(upload_layout)
+        
+        return upload_group
+    
+    def _create_config_group(self):
+        """创建推理参数配置部分"""
+        config_group = QGroupBox("⚙️ 推理配置")
+        config_group.setStyleSheet("font-size: 13px; color: #2c3e50;")
+        config_group.setMinimumWidth(400)
+        config_layout = QVBoxLayout()
+        config_layout.setSpacing(8)
+        
+        # 模型选择
+        model_form = QFormLayout()
+        model_form.setSpacing(8)
+        
+        model_label = QLabel("SAM3 模型:")
+        self.model_combo = QComboBox()
+        self.model_combo.addItems([
+            "ViT-H (更精准，较慢) - sam_vit_h.pth",
+            "ViT-L (平衡) - sam_vit_l.pth",
+            "ViT-B (更快) - sam_vit_b.pth"
+        ])
+        self.model_combo.setToolTip("选择 SAM3 模型大小，ViT-H 精度最高但速度较慢")
+        model_form.addRow(model_label, self.model_combo)
+        
+        # 模型路径
+        path_layout = QHBoxLayout()
+        self.model_path_edit = QLineEdit()
+        self.model_path_edit.setPlaceholderText("例如: /path/to/sam_vit_h.pth")
+        self.model_path_edit.setText(os.path.expanduser("~/.cache/sam/sam_vit_h.pth"))
+        
+        self.browse_model_btn = QPushButton("浏览...")
+        self.browse_model_btn.setFixedWidth(80)
+        self.browse_model_btn.clicked.connect(self.browse_model)
+        
+        path_layout.addWidget(self.model_path_edit, stretch=1)
+        path_layout.addWidget(self.browse_model_btn, stretch=0)
+        model_form.addRow("模型路径:", path_layout)
+        
+        # 设备选择
+        device_label = QLabel("计算设备:")
+        self.device_combo = QComboBox()
+        self.device_combo.addItems(["cuda (GPU - 推荐)", "cpu (CPU)"])
+        self.device_combo.setToolTip("选择推理计算设备")
+        model_form.addRow(device_label, self.device_combo)
+        
+        config_layout.addLayout(model_form)
+        config_layout.addSpacing(10)
+        
+        # 推理按钮
+        button_layout = QVBoxLayout()
+        
+        self.infer_btn = QPushButton("🚀 开始分割推理")
+        self.infer_btn.setFixedHeight(45)
+        self.infer_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                border: none;
+                padding: 10px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #229954;
+            }
+            QPushButton:pressed {
+                background-color: #1e8449;
+            }
+        """)
+        self.infer_btn.clicked.connect(self.run_inference)
+        
+        self.stop_infer_btn = QPushButton("⏹️ 停止推理")
+        self.stop_infer_btn.setFixedHeight(45)
+        self.stop_infer_btn.setEnabled(False)
+        self.stop_infer_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                border: none;
+                padding: 10px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover:enabled {
+                background-color: #c0392b;
+            }
+        """)
+        self.stop_infer_btn.clicked.connect(self.stop_inference)
+        
+        button_layout.addWidget(self.infer_btn)
+        button_layout.addWidget(self.stop_infer_btn)
+        config_layout.addLayout(button_layout)
+        
+        # 进度显示
+        config_layout.addSpacing(10)
+        self.progress_label = QLabel("就绪")
+        self.progress_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+        config_layout.addWidget(self.progress_label)
+        
+        self.infer_progress = QProgressBar()
+        self.infer_progress.setRange(0, 100)
+        self.infer_progress.setValue(0)
+        self.infer_progress.setVisible(False)
+        config_layout.addWidget(self.infer_progress)
+        
+        config_layout.addStretch()
+        config_group.setLayout(config_layout)
+        
+        return config_group
+    
+    def _create_result_group(self):
+        """创建结果显示部分"""
+        result_group = QGroupBox("📊 推理结果")
+        result_group.setStyleSheet("font-size: 13px; color: #2c3e50;")
+        result_layout = QVBoxLayout()
+        
+        # 结果显示区域
+        self.result_scroll = QScrollArea()
+        self.result_scroll.setWidgetResizable(True)
+        self.result_scroll.setStyleSheet("border: 1px solid #bdc3c7; border-radius: 5px;")
+        
+        self.result_label = QLabel("推理结果将显示在此")
+        self.result_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.result_label.setMinimumHeight(300)
+        self.result_label.setStyleSheet("color: #7f8c8d; font-size: 12px;")
+        
+        self.result_scroll.setWidget(self.result_label)
+        result_layout.addWidget(self.result_scroll)
+        
+        # 底部按钮
+        export_btn_layout = QHBoxLayout()
+        
+        self.save_result_btn = QPushButton("💾 保存结果")
+        self.save_result_btn.setEnabled(False)
+        self.save_result_btn.clicked.connect(self.save_result)
+        
+        self.copy_result_btn = QPushButton("📋 复制到剪贴板")
+        self.copy_result_btn.setEnabled(False)
+        self.copy_result_btn.clicked.connect(self.copy_to_clipboard)
+        
+        export_btn_layout.addWidget(self.save_result_btn)
+        export_btn_layout.addWidget(self.copy_result_btn)
+        export_btn_layout.addStretch()
+        
+        result_layout.addLayout(export_btn_layout)
+        result_group.setLayout(result_layout)
+        
+        return result_group
+    
+    def upload_image(self):
+        """上传图片"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择图片",
+            "",
+            "图片文件 (*.png *.jpg *.jpeg *.bmp *.webp *.gif)"
+        )
+        
+        if file_path:
+            self.image_path = file_path
+            
+            # 显示图片缩略图
+            pixmap = QPixmap(file_path)
+            if not pixmap.isNull():
+                scaled_pixmap = pixmap.scaledToWidth(350, Qt.TransformationMode.SmoothTransformation)
+                self.image_label.setPixmap(scaled_pixmap)
+            
+            # 显示文件信息
+            file_name = os.path.basename(file_path)
+            file_size = os.path.getsize(file_path) / 1024
+            self.image_path_label.setText(f"已选择: {file_name}\n大小: {file_size:.1f} KB")
+            
+            self.progress_label.setText("已加载图片，可以开始推理")
+            self.progress_label.setStyleSheet("color: #3498db; font-weight: bold;")
+    
+    def clear_image(self):
+        """清除图片"""
+        self.image_path = None
+        self.image_label.setText("🖼️ 点击下方按钮选择图片\n\n支持格式: PNG, JPG, JPEG, BMP, WebP, GIF")
+        self.image_label.setPixmap(None)
+        self.image_path_label.setText("未选择图片")
+        self.progress_label.setText("就绪")
+        self.progress_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+    
+    def browse_model(self):
+        """浏览模型文件"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择 SAM3 模型文件",
+            "",
+            "模型文件 (*.pth *.pt)"
+        )
+        
+        if file_path:
+            self.model_path_edit.setText(file_path)
+    
+    def run_inference(self):
+        """运行推理"""
+        if not self.image_path:
+            QMessageBox.warning(self, "警告", "请先选择图片")
+            return
+        
+        model_path = self.model_path_edit.text()
+        if not model_path:
+            QMessageBox.warning(self, "警告", "请指定模型文件路径")
+            return
+        
+        device = "cuda" if self.device_combo.currentIndex() == 0 else "cpu"
+        
+        # 禁用按钮
+        self.infer_btn.setEnabled(False)
+        self.upload_btn.setEnabled(False)
+        self.stop_infer_btn.setEnabled(True)
+        
+        # 显示进度条
+        self.infer_progress.setVisible(True)
+        self.infer_progress.setValue(0)
+        self.progress_label.setText("推理中...")
+        self.progress_label.setStyleSheet("color: #f39c12; font-weight: bold;")
+        
+        # 创建并启动推理线程
+        self.inference_thread = SAM3InferenceThread(model_path, self.image_path, device)
+        self.inference_thread.log_signal.connect(self.on_log)
+        self.inference_thread.progress_signal.connect(self.on_progress)
+        self.inference_thread.inference_complete_signal.connect(self.on_inference_complete)
+        self.inference_thread.start()
+    
+    def stop_inference(self):
+        """停止推理"""
+        if self.inference_thread and self.inference_thread.isRunning():
+            self.inference_thread.stop()
+            self.inference_thread.wait()
+            
+            self.infer_btn.setEnabled(True)
+            self.upload_btn.setEnabled(True)
+            self.stop_infer_btn.setEnabled(False)
+            self.infer_progress.setVisible(False)
+            self.progress_label.setText("推理已停止")
+            self.progress_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+    
+    def on_log(self, message, level):
+        """处理日志"""
+        print(f"[SAM3-{level}] {message}")
+    
+    def on_progress(self, value):
+        """处理进度更新"""
+        self.infer_progress.setValue(value)
+    
+    def on_inference_complete(self, success, result):
+        """推理完成回调"""
+        self.infer_btn.setEnabled(True)
+        self.upload_btn.setEnabled(True)
+        self.stop_infer_btn.setEnabled(False)
+        self.infer_progress.setVisible(False)
+        
+        if success:
+            self.result_data = result
+            self.progress_label.setText("✅ 推理成功！")
+            self.progress_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+            
+            # 显示结果
+            self.display_result(result)
+            
+            # 启用导出按钮
+            self.save_result_btn.setEnabled(True)
+            self.copy_result_btn.setEnabled(True)
+        else:
+            self.progress_label.setText(f"❌ 推理失败: {result}")
+            self.progress_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+            QMessageBox.critical(self, "错误", f"推理失败:\n{result}")
+    
+    def display_result(self, result_data):
+        """显示推理结果"""
+        try:
+            image = result_data["image"]
+            masks = result_data["masks"]
+            scores = result_data["scores"]
+            
+            # 生成可视化结果
+            result_image = self._visualize_masks(image, masks, scores)
+            
+            # 转换为 QPixmap 显示
+            h, w, ch = result_image.shape
+            bytes_per_line = ch * w
+            q_img = QImage(result_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_img)
+            
+            # 缩放以适应显示区域
+            scaled_pixmap = pixmap.scaledToHeight(400, Qt.TransformationMode.SmoothTransformation)
+            self.result_label.setPixmap(scaled_pixmap)
+            
+            # 显示统计信息
+            info_text = f"推理完成！\n\n掩码数量: {len(masks)}\n置信度范围: [{scores.min():.3f}, {scores.max():.3f}]"
+            self.result_label.setText(info_text)
+            self.result_label.setPixmap(scaled_pixmap)
+        except Exception as e:
+            self.result_label.setText(f"显示结果时出错: {str(e)}")
+    
+    def _visualize_masks(self, image, masks, scores, alpha=0.5):
+        """可视化分割掩码"""
+        import numpy as np
+        result = image.copy().astype(np.float32)
+        
+        # 为每个掩码分配随机颜色
+        colors = np.random.rand(len(masks), 3) * 255
+        
+        for i, (mask, score) in enumerate(zip(masks, scores)):
+            mask_bool = mask[0] > 0  # 将掩码转换为布尔值
+            color = colors[i % len(colors)]
+            
+            # 将掩码覆盖到图像上
+            result[mask_bool] = result[mask_bool] * (1 - alpha) + color * alpha
+        
+        return result.astype(np.uint8)
+    
+    def save_result(self):
+        """保存结果"""
+        if self.result_data is None:
+            QMessageBox.warning(self, "警告", "没有可保存的结果")
+            return
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "保存结果", "", "PNG 图片 (*.png);;JPEG 图片 (*.jpg);;TIFF 图片 (*.tiff)"
+        )
+        
+        if file_path:
+            try:
+                result_image = self._visualize_masks(
+                    self.result_data["image"],
+                    self.result_data["masks"],
+                    self.result_data["scores"]
+                )
+                result_bgr = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(file_path, result_bgr)
+                QMessageBox.information(self, "成功", f"结果已保存到:\n{file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "错误", f"保存失败:\n{str(e)}")
+    
+    def copy_to_clipboard(self):
+        """复制结果到剪贴板"""
+        if self.result_data is None:
+            QMessageBox.warning(self, "警告", "没有可复制的结果")
+            return
+        
+        try:
+            result_image = self._visualize_masks(
+                self.result_data["image"],
+                self.result_data["masks"],
+                self.result_data["scores"]
+            )
+            
+            h, w, ch = result_image.shape
+            bytes_per_line = ch * w
+            q_img = QImage(result_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            
+            clipboard = QApplication.clipboard()
+            clipboard.setImage(q_img)
+            QMessageBox.information(self, "✅ 成功", "结果已复制到剪贴板")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"复制失败:\n{str(e)}")
+
+
+# ============================================
 # 训练监控部件
 # ============================================
 class TrainingMonitorWidget(QWidget):
@@ -2232,7 +2802,11 @@ class YOLOTrainerGUI(QMainWindow):
         
         # 推理验证选项卡
         self.inference_widget = YOLOInferenceWidget()
-        self.tab_widget.addTab(self.inference_widget, "推理验证")
+        self.tab_widget.addTab(self.inference_widget, "YOLO推理验证")
+        
+        # SAM3 分割推理选项卡
+        self.sam3_widget = SAM3InferenceWidget()
+        self.tab_widget.addTab(self.sam3_widget, "SAM3分割推理")
         
         # 连接标签页切换信号
         self.tab_widget.currentChanged.connect(self.on_tab_changed)
@@ -3068,8 +3642,8 @@ results = model.train(**train_args)"""
     
     def on_tab_changed(self, index):
         """处理标签页切换"""
-        # 当切换到推理验证标签页（第2个）时，隐藏底部按钮
-        if index == 2:  # 推理验证标签页的索引为2
+        # 当切换到推理验证标签页（第2个）或 SAM3 标签页（第3个）时，隐藏底部按钮
+        if index in [2, 3]:  # 推理验证标签页的索引为2，SAM3标签页的索引为3
             # 隐藏底部按钮
             self.validate_btn.setVisible(False)
             self.save_config_btn.setVisible(False)

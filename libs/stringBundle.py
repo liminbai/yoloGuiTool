@@ -21,10 +21,21 @@ class StringBundle:
     def __init__(self, create_key, locale_str):
         assert(create_key == StringBundle.__create_key), "StringBundle must be created using StringBundle.getBundle"
         self.id_to_message = {}
+        self.locale_str = locale_str
+        # 解析并保存locale tags
+        if locale_str is not None:
+            self._locale_tags = re.split('[^a-zA-Z]', locale_str)
+            self._locale_tags = [tag for tag in self._locale_tags if tag]  # 移除空标签
+        else:
+            self._locale_tags = []
+        
+        print(f"[StringBundle] 初始化，语言: {locale_str}, 标签: {self._locale_tags}")
+        
         paths = self.__create_lookup_fallback_list(locale_str)
         for path in paths:
-            print("循环打印文件路径: ", path)
-            self.__load_bundle(path)
+            print(f"[StringBundle] 尝试加载路径: {path}")
+            if self.__load_bundle(path):
+                break  # 成功加载一个后就停止
 
     @classmethod
     def get_bundle(cls, locale_str=None):
@@ -70,35 +81,18 @@ class StringBundle:
 
     def __load_bundle(self, path_prefix):
         """
-        从给定的路径前缀开始，按优先级查找并加载一个配置文件。
-        优先级：path_prefix-zh_CN > path_prefix-zh > path_prefix
-        仅加载找到的第一个存在且有效的文件。
+        从给定的路径加载配置文件。
+        支持 Qt 资源系统路径 (:/strings) 和文件系统路径。
         """
         PROP_SEPARATOR = '='
         
-        # 1. 根据locale构建的tags，生成一个从具体到通用的查找列表
-        # 例如：对于 path_prefix=":/strings", tags=['zh', 'CN']，
-        # 会生成 [':/strings-zh-CN', ':/strings-zh', ':/strings']
-        lookup_paths = []
-        import re
-        # 假设你的文件名使用连字符 '-' 连接区域标签，如 strings-zh-CN
-        # 如果实际使用下划线 '_'，请将 '-' 替换为 '_'
-        if hasattr(self, '_locale_tags'): # 需要先在 __init__ 中生成并保存tags
-            current_path = path_prefix
-            for tag in self._locale_tags:
-                current_path += '-' + tag
-                lookup_paths.insert(0, current_path) # 插入到开头，保证顺序
-        lookup_paths.append(path_prefix) # 最后添加最通用的路径
-
-        # 2. 按优先级查找并加载
-        for load_path in lookup_paths:
-            # 首先尝试Qt资源系统
-            f = QFile(load_path)
+        # 首先尝试 Qt 资源系统
+        if path_prefix.startswith(":/"):
+            f = QFile(path_prefix)
             if f.exists():
-                print(f"[Info] 尝试从Qt资源加载: {load_path}")
+                print(f"[Info] 尝试从Qt资源加载: {path_prefix}")
                 if f.open(QIODevice.OpenModeFlag.ReadOnly | QIODevice.OpenModeFlag.Text):
                     text_stream = QTextStream(f)
-                    # text_stream.setEncoding(QStringConverter.Encoding.Utf8) # PySide6 如果需要
                     while not text_stream.atEnd():
                         line = ustr(text_stream.readLine())
                         if PROP_SEPARATOR in line:
@@ -107,28 +101,34 @@ class StringBundle:
                             value = PROP_SEPARATOR.join(key_value[1:]).strip().strip('"')
                             self.id_to_message[key] = value
                     f.close()
-                    print(f"[Info] 成功从Qt资源加载: {load_path}")
-                    return True # 成功加载一个文件后立即返回
+                    print(f"[Info] 成功从Qt资源加载: {path_prefix}，加载 {len(self.id_to_message)} 条条目")
+                    return True
+            else:
+                print(f"[Warning] Qt资源不存在: {path_prefix}")
+                return False
+        else:
+            # 尝试文件系统路径
+            fs_path = path_prefix if path_prefix.endswith('.properties') else path_prefix + '.properties'
             
-            # 其次，如果Qt资源不存在，尝试文件系统（仅当路径不是资源路径时）
-            elif not load_path.startswith(":/"):
-                fs_path = load_path + '.properties' # 补全文件后缀
-                if os.path.exists(fs_path):
-                    print(f"[Info] 尝试从文件系统加载: {fs_path}")
-                    try:
-                        with open(fs_path, 'r', encoding='utf-8') as file:
-                            for line in file:
-                                if PROP_SEPARATOR in line:
-                                    key_value = line.split(PROP_SEPARATOR)
-                                    key = key_value[0].strip()
-                                    value = PROP_SEPARATOR.join(key_value[1:]).strip().strip('"')
-                                    self.id_to_message[key] = value
-                        print(f"[Info] 成功从文件系统加载: {fs_path}")
-                        return True # 成功加载一个文件后立即返回
-                    except Exception as e:
-                        print(f'[Warning] 加载文件 {fs_path} 失败: {e}')
-                        continue # 加载失败，继续尝试下一个更通用的路径
-        
-        # 3. 所有路径都未找到
-        print(f"[Warning] 未找到任何配置文件，路径前缀: {path_prefix}")
-        return False
+            if os.path.exists(fs_path):
+                print(f"[Info] 尝试从文件系统加载: {fs_path}")
+                try:
+                    with open(fs_path, 'r', encoding='utf-8') as file:
+                        for line in file:
+                            line = line.strip()
+                            # 跳过空行和注释行
+                            if not line or line.startswith('#'):
+                                continue
+                            if PROP_SEPARATOR in line:
+                                key_value = line.split(PROP_SEPARATOR, 1)
+                                key = key_value[0].strip()
+                                value = key_value[1].strip().strip('"')
+                                self.id_to_message[key] = value
+                    print(f"[Info] 成功从文件系统加载: {fs_path}，加载 {len(self.id_to_message)} 条条目")
+                    return True
+                except Exception as e:
+                    print(f'[Warning] 加载文件 {fs_path} 失败: {e}')
+                    return False
+            else:
+                print(f"[Warning] 文件不存在: {fs_path}")
+                return False
