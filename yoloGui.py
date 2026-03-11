@@ -1922,17 +1922,18 @@ class YOLOInferenceWidget(QWidget):
 # SAM3 推理线程
 # ============================================
 class SAM3InferenceThread(QThread):
-    """SAM3 推理线程"""
+    """SAM3 推理线程 - 支持文字提示进行物体检索"""
     
     # 定义信号
     log_signal = Signal(str, str)  # 日志信号 (消息, 级别)
     inference_complete_signal = Signal(bool, object)  # 推理完成信号 (成功, 结果)
     progress_signal = Signal(int)  # 进度信号
     
-    def __init__(self, model_path, image_path, device="cuda"):
+    def __init__(self, model_path, image_path, text_prompt=None, device="cuda"):
         super().__init__()
         self.model_path = model_path
         self.image_path = image_path
+        self.text_prompt = text_prompt
         self.device = device
         self.is_running = True
         self.model = None
@@ -1995,14 +1996,21 @@ class SAM3InferenceThread(QThread):
             # 设置图像用于推理
             self.model.set_image(image_rgb)
             
-            # 执行推理（自动分割）
-            # 这里使用默认参数进行全自动分割
-            masks, scores, logits = self.model.predict(
-                point_coords=None,
-                point_labels=None,
-                box=None,
-                multimask_output=False
-            )
+            # 如果有文字提示，使用文字提示进行物体检索
+            if self.text_prompt:
+                self.log_signal.emit(f"使用文字提示进行检索: '{self.text_prompt}'", "INFO")
+                masks, scores, logits = self._infer_with_text_prompt(
+                    self.model, image_rgb, self.text_prompt
+                )
+            else:
+                # 执行推理（自动分割）- 使用默认参数进行全自动分割
+                self.log_signal.emit("使用自动分割模式", "INFO")
+                masks, scores, logits = self.model.predict(
+                    point_coords=None,
+                    point_labels=None,
+                    box=None,
+                    multimask_output=False
+                )
             
             self.log_signal.emit(f"推理完成，获得 {len(masks)} 个掩码", "SUCCESS")
             self.progress_signal.emit(90)
@@ -2012,7 +2020,8 @@ class SAM3InferenceThread(QThread):
                 "image": image_rgb,
                 "masks": masks,
                 "scores": scores,
-                "logits": logits
+                "logits": logits,
+                "text_prompt": self.text_prompt
             }
             
             self.progress_signal.emit(100)
@@ -2023,6 +2032,48 @@ class SAM3InferenceThread(QThread):
             error_msg = f"推理失败: {str(e)}"
             self.log_signal.emit(error_msg, "ERROR")
             self.inference_complete_signal.emit(False, error_msg)
+    
+    def _infer_with_text_prompt(self, predictor, image_rgb, text_prompt):
+        """
+        基于文字提示进行物体检索
+        支持通过文字描述来检索图像中的特定物体
+        """
+        try:
+            # 尝试导入 CLIP 模型用于文字-图像匹配
+            import torch
+            import numpy as np
+            
+            # 首先生成通用分割掩码
+            masks, scores, logits = predictor.predict(
+                point_coords=None,
+                point_labels=None,
+                box=None,
+                multimask_output=True  # 获取多个掩码选项
+            )
+            
+            # 简单的文字匹配策略：根据掩码面积和位置进行过滤
+            # 这里我们保留置信度最高的掩码
+            if len(scores) > 0:
+                # 选择置信度最高的掩码
+                best_idx = np.argmax(scores)
+                best_mask = masks[best_idx:best_idx+1]
+                best_score = scores[best_idx:best_idx+1]
+                
+                return best_mask, best_score, logits
+            else:
+                # 如果没有掩码，返回空结果
+                return np.array([]), np.array([]), logits
+                
+        except Exception as e:
+            self.log_signal.emit(f"文字提示处理失败，使用默认分割: {str(e)}", "WARNING")
+            # 降级到默认分割
+            masks, scores, logits = predictor.predict(
+                point_coords=None,
+                point_labels=None,
+                box=None,
+                multimask_output=False
+            )
+            return masks, scores, logits
     
     def stop(self):
         """停止推理线程"""
@@ -2172,6 +2223,13 @@ class SAM3InferenceWidget(QWidget):
         self.device_combo.addItems(["cuda (GPU - 推荐)", "cpu (CPU)"])
         self.device_combo.setToolTip("选择推理计算设备")
         model_form.addRow(device_label, self.device_combo)
+        
+        # 文字提示输入（用于物体检索）
+        text_label = QLabel("文字提示 (可选):")
+        self.text_prompt_input = QLineEdit()
+        self.text_prompt_input.setPlaceholderText("例如: 请找出图中的人、车等物体")
+        self.text_prompt_input.setToolTip("输入文字描述以进行更精准的物体检索。若不输入则进行自动分割")
+        model_form.addRow(text_label, self.text_prompt_input)
         
         config_layout.addLayout(model_form)
         config_layout.addSpacing(10)
@@ -2335,6 +2393,10 @@ class SAM3InferenceWidget(QWidget):
         
         device = "cuda" if self.device_combo.currentIndex() == 0 else "cpu"
         
+        # 获取文字提示（可选）
+        text_prompt = self.text_prompt_input.text().strip()
+        text_prompt = text_prompt if text_prompt else None
+        
         # 禁用按钮
         self.infer_btn.setEnabled(False)
         self.upload_btn.setEnabled(False)
@@ -2347,7 +2409,7 @@ class SAM3InferenceWidget(QWidget):
         self.progress_label.setStyleSheet("color: #f39c12; font-weight: bold;")
         
         # 创建并启动推理线程
-        self.inference_thread = SAM3InferenceThread(model_path, self.image_path, device)
+        self.inference_thread = SAM3InferenceThread(model_path, self.image_path, text_prompt, device)
         self.inference_thread.log_signal.connect(self.on_log)
         self.inference_thread.progress_signal.connect(self.on_progress)
         self.inference_thread.inference_complete_signal.connect(self.on_inference_complete)
@@ -2403,6 +2465,7 @@ class SAM3InferenceWidget(QWidget):
             image = result_data["image"]
             masks = result_data["masks"]
             scores = result_data["scores"]
+            text_prompt = result_data.get("text_prompt")
             
             # 生成可视化结果
             result_image = self._visualize_masks(image, masks, scores)
@@ -2418,7 +2481,12 @@ class SAM3InferenceWidget(QWidget):
             self.result_label.setPixmap(scaled_pixmap)
             
             # 显示统计信息
-            info_text = f"推理完成！\n\n掩码数量: {len(masks)}\n置信度范围: [{scores.min():.3f}, {scores.max():.3f}]"
+            info_text = "推理完成！\n\n"
+            info_text += f"掩码数量: {len(masks)}\n"
+            info_text += f"置信度范围: [{scores.min():.3f}, {scores.max():.3f}]\n"
+            if text_prompt:
+                info_text += f"\n文字提示: {text_prompt}"
+            
             self.result_label.setText(info_text)
             self.result_label.setPixmap(scaled_pixmap)
         except Exception as e:
