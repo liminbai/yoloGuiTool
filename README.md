@@ -46,3 +46,5 @@ python yoloGui.py
   - `yoloGui.py` 中使用的模型名称与版本（例如 `yolov11`）应与 ultralytics/本地权重命名一致。
 
 如需更详细的使用说明，请参阅 `USAGE.md` 和 `CONFIG.md`。
+- 架构演进
+  - 若你准备拆分 `yoloGui.py`，可参考 `docs/yolo_gui_refactor_plan.md`。
