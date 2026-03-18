@@ -10,8 +10,12 @@
 ![alt text](image-3.png)
 
 - 主要文件
-  - `yoloGui.py` — 主 GUI 实现，包含训练线程 `YOLOTrainingThread` 与界面控件。
-  - `labelImg.py` — 主 GUI 实现，为原生图像标注界面。
+  - `yoloGui.py` — 兼容入口（保留 `python yoloGui.py` 启动方式）。
+  - `gui/windows/trainer_main_window.py` — 主窗口与应用主流程（`YOLOTrainerGUI`、`main`）。
+  - `gui/threads/yolo_training_thread.py` — 训练线程实现（`YOLOTrainingThread`）。
+  - `gui/threads/yolo_inference_threads.py` — 推理线程实现（`YOLOInferenceThread`、`SAM3InferenceThread`）。
+  - `gui/widgets/class_editor_dialog.py` — 类别编辑对话框（`ClassEditorDialog`）。
+  - `labelImg.py` — 原生图像标注界面。
 
 - 特性
   - 支持选择 YOLO 版本（`YOLOv8` / `YOLOv11` / `YOLOv26`）。
@@ -46,3 +50,5 @@ python yoloGui.py
   - `yoloGui.py` 中使用的模型名称与版本（例如 `yolov11`）应与 ultralytics/本地权重命名一致。
 
 如需更详细的使用说明，请参阅 `USAGE.md` 和 `CONFIG.md`。
+- 架构演进
+  - 若你准备拆分 `yoloGui.py`，可参考 `docs/yolo_gui_refactor_plan.md`。
