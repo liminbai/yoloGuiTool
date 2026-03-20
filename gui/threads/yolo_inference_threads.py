@@ -138,15 +138,47 @@ class SAM3InferenceThread(QThread):
             self.progress_signal.emit(30)
             
             # 根据模型文件名确定模型类型
-            model_type = "vit_h"
-            if "vit_l" in self.model_path:
-                model_type = "vit_l"
-            elif "vit_b" in self.model_path:
-                model_type = "vit_b"
-            
-            sam = sam_model_registry[model_type](checkpoint=self.model_path)
-            sam.to(device=self.device)
-            self.model = SamPredictor(sam)
+            model_filename = os.path.basename(self.model_path).lower()
+            if "sm3" in model_filename or "sam3" in model_filename:
+                # 使用Ultralytics SAM3模型
+                try:
+                    from ultralytics import SAM
+                    self.log_signal.emit(f"检测到SM3/SAM3模型 ({model_filename})，使用Ultralytics加载方式", "INFO")
+                    self.model = SAM(self.model_path)
+                    self.model.to(device=self.device)
+                    self.is_ultralytics_model = True
+                    self.log_signal.emit("Ultralytics SAM3模型加载成功", "SUCCESS")
+                except ImportError:
+                    error_msg = "未找到 Ultralytics 库，请安装: pip install ultralytics"
+                    self.log_signal.emit(error_msg, "ERROR")
+                    self.inference_complete_signal.emit(False, error_msg)
+                    return
+                except Exception as e:
+                    error_msg = f"加载Ultralytics SAM3模型失败: {str(e)}"
+                    self.log_signal.emit(error_msg, "ERROR")
+                    self.log_signal.emit("请检查模型文件是否为Ultralytics格式的SAM模型", "INFO")
+                    self.inference_complete_signal.emit(False, error_msg)
+                    return
+            else:
+                # 使用传统SAM模型
+                try:
+                    model_type = "vit_h"
+                    if "vit_l" in self.model_path.lower():
+                        model_type = "vit_l"
+                    elif "vit_b" in self.model_path.lower():
+                        model_type = "vit_b"
+                    
+                    self.log_signal.emit(f"使用传统SAM模型 ({model_type})", "INFO")
+                    sam = sam_model_registry[model_type](checkpoint=self.model_path)
+                    sam.to(device=self.device)
+                    self.model = SamPredictor(sam)
+                    self.is_ultralytics_model = False
+                    self.log_signal.emit("传统SAM模型加载成功", "SUCCESS")
+                except Exception as e:
+                    error_msg = f"加载传统SAM模型失败: {str(e)}"
+                    self.log_signal.emit(error_msg, "ERROR")
+                    self.inference_complete_signal.emit(False, error_msg)
+                    return
             
             self.log_signal.emit("模型加载成功", "SUCCESS")
             self.progress_signal.emit(50)
@@ -165,24 +197,48 @@ class SAM3InferenceThread(QThread):
             self.log_signal.emit("正在进行分割推理...", "INFO")
             self.progress_signal.emit(70)
             
-            # 设置图像用于推理
-            self.model.set_image(image_rgb)
-            
-            # 如果有文字提示，使用文字提示进行物体检索
-            if self.text_prompt:
-                self.log_signal.emit(f"使用文字提示进行检索: '{self.text_prompt}'", "INFO")
-                masks, scores, logits = self._infer_with_text_prompt(
-                    self.model, image_rgb, self.text_prompt
-                )
+            if self.is_ultralytics_model:
+                # 使用Ultralytics SAM3模型进行推理
+                self.log_signal.emit("使用Ultralytics SAM3进行推理", "INFO")
+                
+                # 对于Ultralytics SAM，如果有文字提示，需要特殊处理
+                if self.text_prompt:
+                    self.log_signal.emit(f"文字提示功能暂不支持Ultralytics SAM3，使用自动分割", "WARNING")
+                
+                # 使用Ultralytics SAM进行预测
+                results = self.model(image_rgb, verbose=False)
+                
+                # 提取掩码和分数
+                if len(results) > 0:
+                    result = results[0]
+                    masks = result.masks.data.cpu().numpy() if result.masks is not None else []
+                    scores = []  # Ultralytics SAM可能没有置信度分数
+                    logits = []  # Ultralytics SAM可能没有logits
+                else:
+                    masks = []
+                    scores = []
+                    logits = []
+                    
             else:
-                # 执行推理（自动分割）- 使用默认参数进行全自动分割
-                self.log_signal.emit("使用自动分割模式", "INFO")
-                masks, scores, logits = self.model.predict(
-                    point_coords=None,
-                    point_labels=None,
-                    box=None,
-                    multimask_output=False
-                )
+                # 使用传统SAM模型
+                # 设置图像用于推理
+                self.model.set_image(image_rgb)
+                
+                # 如果有文字提示，使用文字提示进行物体检索
+                if self.text_prompt:
+                    self.log_signal.emit(f"使用文字提示进行检索: '{self.text_prompt}'", "INFO")
+                    masks, scores, logits = self._infer_with_text_prompt(
+                        self.model, image_rgb, self.text_prompt
+                    )
+                else:
+                    # 执行推理（自动分割）- 使用默认参数进行全自动分割
+                    self.log_signal.emit("使用自动分割模式", "INFO")
+                    masks, scores, logits = self.model.predict(
+                        point_coords=None,
+                        point_labels=None,
+                        box=None,
+                        multimask_output=False
+                    )
             
             self.log_signal.emit(f"推理完成，获得 {len(masks)} 个掩码", "SUCCESS")
             self.progress_signal.emit(90)

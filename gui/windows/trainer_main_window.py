@@ -1412,9 +1412,11 @@ class SAM3InferenceWidget(QWidget):
         self.model_combo.addItems([
             "ViT-H (更精准，较慢) - sam_vit_h.pth",
             "ViT-L (平衡) - sam_vit_l.pth",
-            "ViT-B (更快) - sam_vit_b.pth"
+            "ViT-B (更快) - sam_vit_b.pth",
+            "SM3/SAM3 (最新模型) - *.pt"
         ])
-        self.model_combo.setToolTip("选择 SAM3 模型大小，ViT-H 精度最高但速度较慢")
+        self.model_combo.setToolTip("选择 SAM3 模型大小，ViT-H 精度最高但速度较慢，SM3/SAM3是Ultralytics最新模型")
+        self.model_combo.currentTextChanged.connect(self.on_model_changed)
         model_form.addRow(model_label, self.model_combo)
         
         # 模型路径
@@ -1594,6 +1596,22 @@ class SAM3InferenceWidget(QWidget):
         if file_path:
             self.model_path_edit.setText(file_path)
     
+    def on_model_changed(self, text):
+        """当模型选择改变时更新默认路径"""
+        if "SM3" in text or "SAM3" in text:
+            # SM3/SAM3模型使用不同的默认路径
+            self.model_path_edit.setText(os.path.expanduser("~/.cache/ultralytics/"))
+            self.model_path_edit.setPlaceholderText("例如: /path/to/sm3.pt 或 sam3.pt")
+        else:
+            # 传统SAM模型
+            if "ViT-H" in text:
+                self.model_path_edit.setText(os.path.expanduser("~/.cache/sam/sam_vit_h.pth"))
+            elif "ViT-L" in text:
+                self.model_path_edit.setText(os.path.expanduser("~/.cache/sam/sam_vit_l.pth"))
+            elif "ViT-B" in text:
+                self.model_path_edit.setText(os.path.expanduser("~/.cache/sam/sam_vit_b.pth"))
+            self.model_path_edit.setPlaceholderText("例如: /path/to/sam_vit_h.pth")
+    
     def run_inference(self):
         """运行推理"""
         if not self.image_path:
@@ -1697,7 +1715,14 @@ class SAM3InferenceWidget(QWidget):
             # 显示统计信息
             info_text = "推理完成！\n\n"
             info_text += f"掩码数量: {len(masks)}\n"
-            info_text += f"置信度范围: [{scores.min():.3f}, {scores.max():.3f}]\n"
+            if len(scores) > 0:
+                if hasattr(scores, 'min'):
+                    info_text += f"置信度范围: [{scores.min():.3f}, {scores.max():.3f}]\n"
+                else:
+                    # 处理列表情况
+                    scores_list = list(scores)
+                    if scores_list:
+                        info_text += f"置信度范围: [{min(scores_list):.3f}, {max(scores_list):.3f}]\n"
             if text_prompt:
                 info_text += f"\n文字提示: {text_prompt}"
             
@@ -1712,10 +1737,12 @@ class SAM3InferenceWidget(QWidget):
         result = image.copy().astype(np.float32)
         
         # 为每个掩码分配随机颜色
-        colors = np.random.rand(len(masks), 3) * 255
+        num_masks = len(masks)
+        colors = np.random.rand(num_masks, 3) * 255
         
-        for i, (mask, score) in enumerate(zip(masks, scores)):
-            mask_bool = mask[0] > 0  # 将掩码转换为布尔值
+        for i in range(num_masks):
+            mask = masks[i]
+            mask_bool = mask[0] > 0 if len(mask.shape) > 2 else mask > 0  # 处理不同形状的掩码
             color = colors[i % len(colors)]
             
             # 将掩码覆盖到图像上
@@ -2594,8 +2621,6 @@ results = model.train(**train_args)"""
         self.save_config_btn.setEnabled(False)
         self.load_config_btn.setEnabled(False)
         self.generate_cmd_btn.setEnabled(False)
-        self.test_btn.setEnabled(False)
-        self.compare_btn.setEnabled(False)
         
         self.status_progress.setVisible(True)
         self.status_progress.setValue(0)
@@ -2653,8 +2678,6 @@ results = model.train(**train_args)"""
         self.save_config_btn.setEnabled(True)
         self.load_config_btn.setEnabled(True)
         self.generate_cmd_btn.setEnabled(True)
-        self.test_btn.setEnabled(True)
-        self.compare_btn.setEnabled(True)
         
         self.status_progress.setVisible(False)
         
@@ -2692,8 +2715,6 @@ results = model.train(**train_args)"""
         self.save_config_btn.setEnabled(True)
         self.load_config_btn.setEnabled(True)
         self.generate_cmd_btn.setEnabled(True)
-        self.test_btn.setEnabled(True)
-        self.compare_btn.setEnabled(True)
         
         self.status_progress.setVisible(False)
         
@@ -2931,8 +2952,6 @@ results = model.train(**train_args)"""
             self.generate_cmd_btn.setVisible(False)
             self.start_train_btn.setVisible(False)
             self.stop_train_btn.setVisible(False)
-            self.test_btn.setVisible(False)
-            self.compare_btn.setVisible(False)
         else:
             # 显示底部按钮
             self.validate_btn.setVisible(True)
@@ -2941,8 +2960,6 @@ results = model.train(**train_args)"""
             self.generate_cmd_btn.setVisible(True)
             self.start_train_btn.setVisible(True)
             self.stop_train_btn.setVisible(True)
-            self.test_btn.setVisible(True)
-            self.compare_btn.setVisible(True)
     
     def closeEvent(self, event):
         """窗口关闭事件"""
