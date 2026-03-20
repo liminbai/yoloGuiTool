@@ -1446,7 +1446,23 @@ class SAM3InferenceWidget(QWidget):
         self.text_prompt_input.setPlaceholderText("例如: 请找出图中的人、车等物体")
         self.text_prompt_input.setToolTip("输入文字描述以进行更精准的物体检索。若不输入则进行自动分割")
         model_form.addRow(text_label, self.text_prompt_input)
-        
+
+        # 文本匹配阈值和TopN控制
+        threshold_label = QLabel("相似度阈值:")
+        self.threshold_spin = QDoubleSpinBox()
+        self.threshold_spin.setRange(0.0, 1.0)
+        self.threshold_spin.setSingleStep(0.05)
+        self.threshold_spin.setValue(0.2)
+        self.threshold_spin.setToolTip("CLIP相似度阈值，只有相似度 >= 阈值的候选会被保留")
+        model_form.addRow(threshold_label, self.threshold_spin)
+
+        topn_label = QLabel("Top N实例:")
+        self.top_n_spin = QSpinBox()
+        self.top_n_spin.setRange(1, 10)
+        self.top_n_spin.setValue(3)
+        self.top_n_spin.setToolTip("选择相似度最高的前N个实例显示")
+        model_form.addRow(topn_label, self.top_n_spin)
+
         config_layout.addLayout(model_form)
         config_layout.addSpacing(10)
         
@@ -1641,7 +1657,12 @@ class SAM3InferenceWidget(QWidget):
         self.progress_label.setStyleSheet("color: #f39c12; font-weight: bold;")
         
         # 创建并启动推理线程
-        self.inference_thread = SAM3InferenceThread(model_path, self.image_path, text_prompt, device)
+        threshold = self.threshold_spin.value()
+        top_n = self.top_n_spin.value()
+        self.inference_thread = SAM3InferenceThread(
+            model_path, self.image_path, text_prompt, device,
+            clip_threshold=threshold, top_n=top_n
+        )
         self.inference_thread.log_signal.connect(self.on_log)
         self.inference_thread.progress_signal.connect(self.on_progress)
         self.inference_thread.inference_complete_signal.connect(self.on_inference_complete)
@@ -1697,10 +1718,11 @@ class SAM3InferenceWidget(QWidget):
             image = result_data["image"]
             masks = result_data["masks"]
             scores = result_data["scores"]
+            boxes = result_data.get("boxes", [])
             text_prompt = result_data.get("text_prompt")
             
-            # 生成可视化结果
-            result_image = self._visualize_masks(image, masks, scores)
+            # 生成可视化结果（使用边界框和掩码）
+            result_image = self._visualize_boxes(image, boxes, masks)
             
             # 转换为 QPixmap 显示
             h, w, ch = result_image.shape
@@ -1714,7 +1736,7 @@ class SAM3InferenceWidget(QWidget):
             
             # 显示统计信息
             info_text = "推理完成！\n\n"
-            info_text += f"掩码数量: {len(masks)}\n"
+            info_text += f"检测到目标数量: {len(boxes) if len(boxes) > 0 else len(masks)}\n"
             if len(scores) > 0:
                 if hasattr(scores, 'min'):
                     info_text += f"置信度范围: [{scores.min():.3f}, {scores.max():.3f}]\n"
@@ -1731,27 +1753,45 @@ class SAM3InferenceWidget(QWidget):
         except Exception as e:
             self.result_label.setText(f"显示结果时出错: {str(e)}")
     
-    def _visualize_masks(self, image, masks, scores, alpha=0.5):
-        """可视化分割掩码"""
+    def _visualize_boxes(self, image, boxes, masks, alpha=0.5):
+        """可视化边界框和分割掩码"""
         import numpy as np
+        import cv2
         result = image.copy().astype(np.float32)
         
-        # 为每个掩码分配随机颜色
-        num_masks = len(masks)
-        colors = np.random.rand(num_masks, 3) * 255
+        # 为每个目标分配随机颜色
+        num_boxes = len(boxes) if len(boxes) > 0 else 0
+        colors = np.random.rand(num_boxes, 3) * 255
         
-        for i in range(num_masks):
-            mask = masks[i]
-            mask_bool = mask[0] > 0 if len(mask.shape) > 2 else mask > 0  # 处理不同形状的掩码
-            color = colors[i % len(colors)]
+        for i in range(num_boxes):
+            # 绘制边界框
+            if len(boxes) > i and len(boxes[i]) >= 4:
+                xmin, ymin, xmax, ymax = boxes[i][:4]
+                color = colors[i % len(colors)]
+                
+                # 绘制矩形框
+                result = cv2.rectangle(result, (int(xmin), int(ymin)), (int(xmax), int(ymax)), 
+                                   color.tolist(), 2)
+                
+                # 添加标签
+                label = f"Obj {i+1}"
+                cv2.putText(result, label, (int(xmin), int(ymin)-5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color.tolist(), 2)
             
-            # 将掩码覆盖到图像上
-            result[mask_bool] = result[mask_bool] * (1 - alpha) + color * alpha
+            # 如果有对应的掩码，也绘制掩码
+            if len(masks) > i:
+                mask = masks[i]
+                mask_bool = mask[0] > 0 if len(mask.shape) > 2 else mask > 0
+                color = colors[i % len(colors)]
+                
+                # 将掩码覆盖到图像上
+                result[mask_bool] = result[mask_bool] * (1 - alpha) + color * alpha
         
         return result.astype(np.uint8)
     
     def save_result(self):
         """保存结果"""
+        import cv2
         if self.result_data is None:
             QMessageBox.warning(self, "警告", "没有可保存的结果")
             return
@@ -1762,10 +1802,10 @@ class SAM3InferenceWidget(QWidget):
         
         if file_path:
             try:
-                result_image = self._visualize_masks(
+                result_image = self._visualize_boxes(
                     self.result_data["image"],
-                    self.result_data["masks"],
-                    self.result_data["scores"]
+                    self.result_data.get("boxes", []),
+                    self.result_data["masks"]
                 )
                 result_bgr = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
                 cv2.imwrite(file_path, result_bgr)
