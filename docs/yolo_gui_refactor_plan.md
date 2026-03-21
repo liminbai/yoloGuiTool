@@ -56,4 +56,9 @@ project_root/
 
 ## 本次已完成
 
-- 已将 `YOLOTrainingThread` 从 `yoloGui.py` 抽离到 `yolo_training_thread.py`，作为后续模块化拆分的第一步。
+- 已创建 `gui/windows`、`gui/widgets`、`gui/threads` 分层目录并完成包初始化。
+- 已将主窗口逻辑迁移到 `gui/windows/trainer_main_window.py`，`yoloGui.py` 变为兼容入口。
+- 已将 `YOLOTrainingThread` 迁移到 `gui/threads/yolo_training_thread.py`。
+- 已将 `YOLOInferenceThread` 与 `SAM3InferenceThread` 迁移到 `gui/threads/yolo_inference_threads.py`。
+- 已将 `ClassEditorDialog` 迁移到 `gui/widgets/class_editor_dialog.py`。
+- 根目录保留同名兼容导出模块，避免旧导入路径立即失效。
