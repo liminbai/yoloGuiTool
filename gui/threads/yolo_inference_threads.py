@@ -142,7 +142,7 @@ class SAM3InferenceThread(QThread):
             # 根据模型文件名确定模型类型
             model_filename = os.path.basename(self.model_path).lower()
             if "sm3" in model_filename or "sam3" in model_filename:
-                # 使用Ultralytics SAM3模型
+                # 优先尝试使用Ultralytics SAM3模型
                 try:
                     from ultralytics import SAM
                     self.log_signal.emit(f"检测到SM3/SAM3模型 ({model_filename})，使用Ultralytics加载方式", "INFO")
@@ -151,10 +151,32 @@ class SAM3InferenceThread(QThread):
                     self.is_ultralytics_model = True
                     self.log_signal.emit("Ultralytics SAM3模型加载成功", "SUCCESS")
                 except ImportError:
-                    error_msg = "未找到 Ultralytics 库，请安装: pip install ultralytics"
-                    self.log_signal.emit(error_msg, "ERROR")
-                    self.inference_complete_signal.emit(False, error_msg)
-                    return
+                    # Ultralytics不可用，尝试使用Meta原始SAM库
+                    self.log_signal.emit("Ultralytics不可用，尝试使用Meta原始SAM库", "WARNING")
+                    try:
+                        from segment_anything import sam_model_registry, SamPredictor
+                        model_type = "vit_h"
+                        if "vit_l" in model_filename:
+                            model_type = "vit_l"
+                        elif "vit_b" in model_filename:
+                            model_type = "vit_b"
+                        
+                        self.log_signal.emit(f"使用Meta SAM {model_type}模型", "INFO")
+                        sam = sam_model_registry[model_type](checkpoint=self.model_path)
+                        sam.to(device=self.device)
+                        self.model = SamPredictor(sam)
+                        self.is_ultralytics_model = False
+                        self.log_signal.emit("Meta SAM模型加载成功", "SUCCESS")
+                    except ImportError:
+                        error_msg = "未找到SAM依赖库，请安装: pip install segment-anything torch torchvision"
+                        self.log_signal.emit(error_msg, "ERROR")
+                        self.inference_complete_signal.emit(False, error_msg)
+                        return
+                    except Exception as e:
+                        error_msg = f"加载Meta SAM模型失败: {str(e)}"
+                        self.log_signal.emit(error_msg, "ERROR")
+                        self.inference_complete_signal.emit(False, error_msg)
+                        return
                 except Exception as e:
                     error_msg = f"加载Ultralytics SAM3模型失败: {str(e)}"
                     self.log_signal.emit(error_msg, "ERROR")
@@ -164,12 +186,24 @@ class SAM3InferenceThread(QThread):
             else:
                 # 使用传统SAM模型
                 try:
+                    # 首先验证模型文件
+                    if not os.path.exists(self.model_path):
+                        error_msg = f"模型文件不存在: {self.model_path}"
+                        self.log_signal.emit(error_msg, "ERROR")
+                        self.inference_complete_signal.emit(False, error_msg)
+                        return
+
+                    # 检查文件大小（SAM模型通常很大）
+                    file_size = os.path.getsize(self.model_path) / (1024 * 1024)  # MB
+                    if file_size < 100:  # SAM模型通常超过100MB
+                        self.log_signal.emit(f"警告: 模型文件大小仅 {file_size:.1f}MB，SAM模型通常超过1GB", "WARNING")
+
                     model_type = "vit_h"
                     if "vit_l" in self.model_path.lower():
                         model_type = "vit_l"
                     elif "vit_b" in self.model_path.lower():
                         model_type = "vit_b"
-                    
+
                     self.log_signal.emit(f"使用传统SAM模型 ({model_type})", "INFO")
                     sam = sam_model_registry[model_type](checkpoint=self.model_path)
                     sam.to(device=self.device)
@@ -177,8 +211,25 @@ class SAM3InferenceThread(QThread):
                     self.is_ultralytics_model = False
                     self.log_signal.emit("传统SAM模型加载成功", "SUCCESS")
                 except Exception as e:
-                    error_msg = f"加载传统SAM模型失败: {str(e)}"
+                    error_msg = f"加载Meta SAM模型失败: {str(e)}"
                     self.log_signal.emit(error_msg, "ERROR")
+
+                    # 提供更详细的错误分析和建议
+                    error_str = str(e).lower()
+                    if "missing key" in error_str and "state_dict" in error_str:
+                        self.log_signal.emit("模型权重文件与期望的SAM架构不匹配", "ERROR")
+                        self.log_signal.emit("可能原因:", "INFO")
+                        self.log_signal.emit("1. 下载了SAM 2模型权重，但代码期望SAM 1", "INFO")
+                        self.log_signal.emit("2. 模型权重文件损坏或不完整", "INFO")
+                        self.log_signal.emit("3. 使用了其他类型的分割模型权重", "INFO")
+                        self.log_signal.emit("建议解决方案:", "INFO")
+                        self.log_signal.emit("- 下载正确的SAM 1模型权重文件", "INFO")
+                        self.log_signal.emit("- 确保使用vit_b/vit_l/vit_h版本的SAM模型", "INFO")
+                        self.log_signal.emit("- 检查模型文件是否完整下载", "INFO")
+                    elif "unexpected key" in error_str and "state_dict" in error_str:
+                        self.log_signal.emit("模型权重包含意外的参数", "ERROR")
+                        self.log_signal.emit("这通常表示使用了不兼容的模型类型", "INFO")
+
                     self.inference_complete_signal.emit(False, error_msg)
                     return
             
@@ -319,6 +370,10 @@ class SAM3InferenceThread(QThread):
                 return masks, scores, logits
 
             # 传统SAM文字提示（SamPredictor）
+            # 注意：Meta原始SAM不支持直接文字提示，这里使用自动分割
+            if text_prompt:
+                self.log_signal.emit(f"Meta SAM不支持直接文字提示 '{text_prompt}'，使用自动分割模式", "WARNING")
+            
             masks, scores, logits = predictor.predict(
                 point_coords=None,
                 point_labels=None,
