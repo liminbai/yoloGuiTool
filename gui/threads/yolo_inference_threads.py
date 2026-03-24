@@ -142,17 +142,26 @@ class SAM3InferenceThread(QThread):
             # 根据模型文件名确定模型类型
             model_filename = os.path.basename(self.model_path).lower()
             if "sm3" in model_filename or "sam3" in model_filename:
-                # 优先尝试使用Ultralytics SAM3模型
+                # 优先尝试使用Ultralytics SAM3/SM3模型
                 try:
                     from ultralytics import SAM
-                    self.log_signal.emit(f"检测到SM3/SAM3模型 ({model_filename})，使用Ultralytics加载方式", "INFO")
+                    self.log_signal.emit(f"检测到SM3/SAM3模型 ({model_filename})，使用Ultralytics SAM加载方式", "INFO")
                     self.model = SAM(self.model_path)
                     self.model.to(device=self.device)
                     self.is_ultralytics_model = True
                     self.log_signal.emit("Ultralytics SAM3模型加载成功", "SUCCESS")
-                except ImportError:
-                    # Ultralytics不可用，尝试使用Meta原始SAM库
-                    self.log_signal.emit("Ultralytics不可用，尝试使用Meta原始SAM库", "WARNING")
+                except (ImportError, Exception) as e:
+                    # SAM3SemanticPredictor不可用，尝试旧版Ultralytics SAM
+                    self.log_signal.emit(f"SAM3SemanticPredictor加载失败: {e}，尝试旧版方式", "WARNING")
+                    try:
+                        from ultralytics import SAM
+                        self.log_signal.emit("尝试使用旧版Ultralytics SAM", "INFO")
+                        self.model = SAM(self.model_path)
+                        self.model.to(device=self.device)
+                        self.is_ultralytics_model = True
+                        self.log_signal.emit("旧版Ultralytics SAM加载成功", "SUCCESS")
+                    except Exception as e2:
+                        self.log_signal.emit(f"旧版Ultralytics SAM加载失败: {e2}，尝试使用Meta原始库", "WARNING")
                     try:
                         from segment_anything import sam_model_registry, SamPredictor
                         model_type = "vit_h"
@@ -313,61 +322,87 @@ class SAM3InferenceThread(QThread):
             import os
 
             if ultralytics:
-                # Ultralytics SAM3可能支持直接文字提示参数
+                # Ultralytics SAM3使用predict()进行推理（不支持直接文本参数）
+                # 文本匹配通过CLIP在得到所有候选后进行
                 try:
-                    results = predictor(image_rgb, text=[text_prompt], verbose=False)
-                except TypeError:
-                    try:
-                        results = predictor(image_rgb, prompt=[text_prompt], verbose=False)
-                    except Exception as e:
-                        self.log_signal.emit(f"Ultralytics文本提示API尝试失败，使用默认推理: {e}", "WARNING")
-                        results = predictor(image_rgb, verbose=False)
-                except Exception as e:
-                    self.log_signal.emit(f"Ultralytics文本提示异常，使用默认推理: {e}", "WARNING")
-                    results = predictor(image_rgb, verbose=False)
-
-                if len(results) == 0:
-                    return np.array([]), np.array([]), np.array([])
-
-                result = results[0]
-                masks = result.masks.data.cpu().numpy() if getattr(result, 'masks', None) is not None else np.array([])
-                scores = []
-                logits = []
-
-                if len(masks) == 0:
-                    self.log_signal.emit("Ultralytics SAM3返回空掩码", "WARNING")
-                    return masks, np.array(scores), np.array(logits)
-
-                # 保留所有候选掩码；如果安装了CLIP再做语义排序
-                if text_prompt:
-                    match_scores = self._clip_rerank_masks(image_rgb, masks, text_prompt)
-                    if match_scores is not None and len(match_scores) > 0:
-                        valid_idx = np.where(match_scores >= self.clip_threshold)[0]
-                        if len(valid_idx) == 0:
-                            self.log_signal.emit(
-                                f"无掩码达到相似度阈值 {self.clip_threshold:.2f}，返回原始候选结果", "WARNING"
-                            )
-                            valid_idx = np.arange(len(match_scores))
-
-                        # 取相似度最好的 top_n 实例
-                        top_idx = valid_idx[np.argsort(match_scores[valid_idx])[::-1][:self.top_n]]
-                        masks = masks[top_idx]
-                        scores = np.array(match_scores)[top_idx]
-                        self.log_signal.emit(
-                            f"根据文本匹配获得 {len(masks)} 个候选实例 (Top{self.top_n}, 阈值{self.clip_threshold:.2f})", "INFO"
-                        )
+                    # 调用predict()获得所有分割候选
+                    if hasattr(predictor, 'predict'):
+                        results = predictor.predict(image_rgb)
                     else:
-                        self.log_signal.emit(
-                            "未检测到CLIP，可直接使用Ultralytics提示结果(全部候选)", "INFO"
-                        )
+                        # 备选：使用call接口
+                        results = predictor(image_rgb)
+                    
+                    if results is None:
+                        self.log_signal.emit("SAM3推理返回None", "WARNING")
+                        return np.array([]), np.array([]), np.array([])
+                    
+                    # 处理结果
+                    if isinstance(results, list) and len(results) > 0:
+                        result = results[0]
+                        masks = result.masks.data.cpu().numpy() if hasattr(result, 'masks') and getattr(result, 'masks', None) is not None else np.array([])
+                    elif hasattr(results, 'masks'):
+                        masks = results.masks.data.cpu().numpy() if getattr(results, 'masks', None) is not None else np.array([])
+                    else:
+                        masks = np.array([])
+                    
+                    scores = []
+                    logits = []
+
+                    if len(masks) == 0:
+                        self.log_signal.emit("SAM3推理返回空掩码", "WARNING")
+                        return masks, np.array(scores), np.array(logits)
+
+                    # 保留所有候选掩码；如果安装了CLIP再做语义排序
+                    if text_prompt:
+                        match_scores = self._clip_rerank_masks(image_rgb, masks, text_prompt)
+                        if match_scores is not None and len(match_scores) > 0:
+                            valid_idx = np.where(match_scores >= self.clip_threshold)[0]
+                            if len(valid_idx) == 0:
+                                self.log_signal.emit(
+                                    f"无掩码达到相似度阈值 {self.clip_threshold:.2f}，返回原始候选结果", "WARNING"
+                                )
+                                valid_idx = np.arange(len(match_scores))
+
+                            # 取相似度最好的 top_n 实例
+                            top_idx = valid_idx[np.argsort(match_scores[valid_idx])[::-1][:self.top_n]]
+                            masks = masks[top_idx]
+                            scores = np.array(match_scores)[top_idx]
+                            self.log_signal.emit(
+                                f"根据文本匹配获得 {len(masks)} 个候选实例 (Top{self.top_n}, 阈值{self.clip_threshold:.2f})", "INFO"
+                            )
+                        else:
+                            self.log_signal.emit(
+                                "未检测到CLIP，使用全部SAM3推理候选", "INFO"
+                            )
+                            scores = np.array([1.0] * len(masks))
+                            logits = np.array([0.0] * len(masks))
+                    else:
                         scores = np.array([1.0] * len(masks))
                         logits = np.array([0.0] * len(masks))
 
-                else:
-                    scores = np.array([1.0] * len(masks))
-                    logits = np.array([0.0] * len(masks))
-
-                return masks, scores, logits
+                    return masks, scores, logits
+                    
+                except Exception as e:
+                    self.log_signal.emit(f"SAM3文本匹配异常: {e}，尝试简单推理", "WARNING")
+                    # 降级处理：尝试简单推理
+                    try:
+                        if hasattr(predictor, 'predict'):
+                            results = predictor.predict(image_rgb)
+                        else:
+                            results = predictor(image_rgb)
+                        
+                        if isinstance(results, list) and len(results) > 0:
+                            result = results[0]
+                            masks = result.masks.data.cpu().numpy() if hasattr(result, 'masks') else np.array([])
+                        elif hasattr(results, 'masks'):
+                            masks = results.masks.data.cpu().numpy() if getattr(results, 'masks', None) is not None else np.array([])
+                        else:
+                            masks = np.array([])
+                        
+                        return masks, np.array([1.0] * len(masks)), np.array([0.0] * len(masks))
+                    except Exception as e2:
+                        self.log_signal.emit(f"SAM3推理完全失败: {e2}", "ERROR")
+                        return np.array([]), np.array([]), np.array([])
 
             # 传统SAM文字提示（SamPredictor）
             # 注意：Meta原始SAM不支持直接文字提示，这里使用自动分割
