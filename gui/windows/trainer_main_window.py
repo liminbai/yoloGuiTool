@@ -52,22 +52,6 @@ class YOLOConfigWidget(QWidget):
         main_layout.setContentsMargins(12, 12, 12, 12)
         main_layout.setSpacing(12)
         
-        # 模型系列选择
-        model_family_group = QGroupBox("🎯 选择YOLO版本")
-        model_family_layout = QHBoxLayout()
-        model_family_layout.setSpacing(10)
-        
-        self.model_family_combo = QComboBox()
-        self.model_family_combo.addItems(["YOLOv8", "YOLOv11", "YOLOv26"])
-        self.model_family_combo.setToolTip("YOLOv8: 标准版本\nYOLOv11: 改进版本\nYOLOv26: 最新版本")
-        self.model_family_combo.currentTextChanged.connect(self.on_model_family_changed)
-        model_family_layout.addWidget(QLabel("YOLO版本:"))
-        model_family_layout.addWidget(self.model_family_combo)
-        model_family_layout.addStretch()
-        
-        model_family_group.setLayout(model_family_layout)
-        main_layout.addWidget(model_family_group)
-        
         # 数据集配置部分
         dataset_group = QGroupBox("📊 数据集配置")
         dataset_layout = QFormLayout()
@@ -136,6 +120,13 @@ class YOLOConfigWidget(QWidget):
         model_layout = QFormLayout()
         model_layout.setHorizontalSpacing(10)
         model_layout.setVerticalSpacing(8)
+        
+        # YOLO版本选择（移动到模型配置中）
+        self.model_family_combo = QComboBox()
+        self.model_family_combo.addItems(["YOLOv8", "YOLOv11", "YOLOv26"])
+        self.model_family_combo.setToolTip("YOLOv8: 标准版本\nYOLOv11: 改进版本\nYOLOv26: 最新版本")
+        self.model_family_combo.currentTextChanged.connect(self.on_model_family_changed)
+        model_layout.addRow("YOLO版本:", self.model_family_combo)
         
         # 任务类型选择
         self.task_combo = QComboBox()
@@ -2216,6 +2207,13 @@ class YOLOTrainerGUI(QMainWindow):
         self.generate_cmd_btn.clicked.connect(self.show_api_call)
         button_layout.addWidget(self.generate_cmd_btn)
         
+        # 数据标注
+        self.labeling_btn = QPushButton("📝 数据标注")
+        self.labeling_btn.setMinimumHeight(38)
+        self.labeling_btn.setToolTip("打开LabelImg工具进行数据标注")
+        self.labeling_btn.clicked.connect(self.open_labeling_tool)
+        button_layout.addWidget(self.labeling_btn)
+        
         button_layout.addStretch()
         
         # 开始训练
@@ -2967,6 +2965,29 @@ results = model.train(**train_args)"""
         except Exception as e:
             # 静默处理，加载失败则使用默认值
             pass
+    
+    def open_labeling_tool(self):
+        """打开LabelImg数据标注工具"""
+        try:
+            import subprocess
+            import sys
+            import os
+            
+            # 获取labelImg.py的路径
+            labelimg_path = os.path.join(os.path.dirname(__file__), '..', '..', 'labelImg.py')
+            labelimg_path = os.path.abspath(labelimg_path)
+            
+            if not os.path.exists(labelimg_path):
+                QMessageBox.warning(self, "错误", f"找不到LabelImg工具: {labelimg_path}")
+                return
+            
+            # 启动LabelImg
+            self.monitor_widget.add_log("正在启动LabelImg数据标注工具...", "INFO")
+            subprocess.Popen([sys.executable, labelimg_path])
+            
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"启动LabelImg失败: {str(e)}")
+            self.monitor_widget.add_log(f"启动LabelImg失败: {str(e)}", "ERROR")
     
     def on_tab_changed(self, index):
         """处理标签页切换"""

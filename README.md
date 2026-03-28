@@ -1,13 +1,17 @@
 # AIToYolo GUI
 
-2025年底大模型最佳实践竟然是代码生成，于是就通过烧token的模式构建基于Yolo的应用程序。
-- 1）先基于PySide6图形界面，搭建了一个可视化的yolo训练、训练监控、推理的一个简易应用，对于不喜欢命令行的朋友来说是个不错的选择，该程序主要支持（YOLOv8、YOLOv11、YOLOv26）这三个版本。
-- 2）PySide6图形界面将labelImg标注工具进行了重构，并修复了一些原生缺陷。
+  本项目通过本地客户端界面的方式将ultralytics工程主流的模型应用做了可视化应用配置，希望能给喜欢YOLO的同学提供多一种选择。该程序几项特点：
 
-![alt text](image.png)
-![alt text](image-1.png)
-![alt text](image-2.png)
-![alt text](image-3.png)
+- 1）基于最新的PySide6图形界面进行了搭建；
+- 2）主要支持（YOLOv8、YOLOv11、YOLOv26）这三个版本训练和推理；
+- 3）支持对最新版本SAM3的推理；
+- 4）集成了labelImg标注工具，升级到PySide6界面，并修复了本地化、删除图片跳转索引等问题。
+
+![alt text](docs/image.png)
+![alt text](docs/image-1.png)
+![alt text](docs/image-2.png)
+![alt text](docs/image-3.png)
+![alt text](docs/image-4.png)
 
 - 主要文件
   - `yoloGui.py` — 兼容入口（保留 `python yoloGui.py` 启动方式）。
@@ -16,6 +20,7 @@
   - `gui/threads/yolo_inference_threads.py` — 推理线程实现（`YOLOInferenceThread`、`SAM3InferenceThread`）。
   - `gui/widgets/class_editor_dialog.py` — 类别编辑对话框（`ClassEditorDialog`）。
   - `labelImg.py` — 原生图像标注界面。
+  - `requirements-full.txt` — 完整依赖包列表（推荐安装）。
 
 - 特性
   - 支持选择 YOLO 版本（`YOLOv8` / `YOLOv11` / `YOLOv26`）。
@@ -26,29 +31,55 @@
 
 - 依赖
   - Python 3.8+
-  - `PySide6`
-  - `ultralytics`
-  - 其他常用库：`pyyaml`、`json`（标准库）
+  - `PySide6` - GUI框架
+  - `ultralytics>=8.2.0` - YOLO模型库（支持YOLOv8/v11/v26）
+  - `torch>=2.1.0` & `torchvision>=0.16.0` - PyTorch深度学习框架
+  - `opencv-python` - 图像处理
+  - `pyyaml` - 配置文件处理
+  - 可选依赖：
+    - `segment-anything` - Meta原始SAM模型支持
+    - `open_clip_torch` - CLIP文字提示支持
+    - `transformers` - HuggingFace模型支持
 
 - 快速运行
-  1. 激活或创建合适的 Python 环境，并安装依赖，例如：
+  1. 激活或创建合适的 Python 环境，并安装依赖：
 
 ```bash
-conda activate yolo
-pip install -r requirements.txt  # 若有 requirements，可替换为手动安装
-pip install PySide6 ultralytics pyyaml
+# 创建新的conda环境（推荐）
+conda create -n yolo-gui python=3.10 -y
+conda activate yolo-gui
+
+# 安装核心依赖
+pip install PySide6 ultralytics>=8.2.0 torch>=2.1.0 torchvision>=0.16.0 opencv-python pyyaml
+
+# 安装可选依赖（用于SAM3文字提示功能）
+pip install segment-anything open_clip_torch transformers
 ```
 
-2. 在 `AIToYolo` 目录下运行 GUI：
+  或使用一键安装脚本：
+
+```bash
+# 克隆项目后运行
+git clone <repository-url>
+cd yoloGuiTool
+
+# 自动安装所有依赖
+pip install -r requirements-full.txt  # 推荐：一键安装所有依赖
+```
+
+1. 在项目目录下运行 GUI：
 
 ```bash
 python yoloGui.py
 ```
 
-- 注意
-  - 请确保 `ultralytics` 与 `PySide6` 可用于当前环境。
-  - `yoloGui.py` 中使用的模型名称与版本（例如 `yolov11`）应与 ultralytics/本地权重命名一致。
+## 注意
 
-如需更详细的使用说明，请参阅 `USAGE.md` 和 `CONFIG.md`。
-- 架构演进
-  - 若你准备拆分 `yoloGui.py`，可参考 `docs/yolo_gui_refactor_plan.md`。
+- 请确保 `ultralytics` 与 `PySide6` 可用于当前环境。
+- `yoloGui.py` 中使用的模型名称与版本（例如 `yolov11`）应与 ultralytics/本地权重命名一致。
+- SAM3功能需要PyTorch 2.1.0+和Ultralytics 8.2.0+支持。
+- 文字提示功能需要安装可选依赖：`open_clip_torch` 或 `transformers`。
+
+## 架构演进
+
+- 若你准备拆分 `yoloGui.py`，可参考 `docs/yolo_gui_refactor_plan.md`。

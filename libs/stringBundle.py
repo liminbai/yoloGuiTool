@@ -32,10 +32,7 @@ class StringBundle:
         print(f"[StringBundle] 初始化，语言: {locale_str}, 标签: {self._locale_tags}")
         
         paths = self.__create_lookup_fallback_list(locale_str)
-        for path in paths:
-            print(f"[StringBundle] 尝试加载路径: {path}")
-            if self.__load_bundle(path):
-                break  # 成功加载一个后就停止
+        self.__load_bundle(paths[-1])
 
     @classmethod
     def get_bundle(cls, locale_str=None):
@@ -57,9 +54,6 @@ class StringBundle:
 
     def __create_lookup_fallback_list(self, locale_str):
         result_paths = []
-        # 优先使用 Qt 资源系统路径
-        base_path = ":/strings"
-        result_paths.append(base_path)
         
         # 如果 Qt 资源系统加载失败，使用文件系统路径作为后备
         import os
@@ -69,9 +63,10 @@ class StringBundle:
         print("文件系统基础路径: ", fs_base_path)
 
         result_paths.append(fs_base_path)
-        
+
         if locale_str is not None:
             tags = re.split('[^a-zA-Z]', locale_str)
+            
             for tag in tags:
                 if tag: # 确保 tag 不为空
                     last_path = result_paths[-1]
