@@ -7,11 +7,11 @@
 - 3）支持对最新版本SAM3的推理；
 - 4）集成了labelImg标注工具，升级到PySide6界面，并修复了本地化、删除图片跳转索引等问题。
 
-![alt text](docs/image.png)
-![alt text](docs/image-1.png)
-![alt text](docs/image-2.png)
-![alt text](docs/image-3.png)
-![alt text](docs/image-4.png)
+![alt text](./docs/image.png)
+![alt text](./docs/image-1.png)
+![alt text](./docs/image-2.png)
+![alt text](./docs/image-3.png)
+![alt text](./docs/image-4.png)
 
 - 主要文件
   - `yoloGui.py` — 兼容入口（保留 `python yoloGui.py` 启动方式）。
