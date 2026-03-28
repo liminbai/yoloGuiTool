@@ -93,7 +93,7 @@ class YOLOInferenceThread(QThread):
 # SAM3 推理线程
 # ============================================
 class SAM3InferenceThread(QThread):
-    """SAM3 推理线程 - 支持文字提示进行物体检索"""
+    """SAM3 推理线程 - 仅支持Ultralytics SAM3模型，支持文字提示进行物体检索"""
     
     # 定义信号
     log_signal = Signal(str, str)  # 日志信号 (消息, 级别)
@@ -120,11 +120,10 @@ class SAM3InferenceThread(QThread):
             
             try:
                 # 尝试导入 SAM 相关库
-                from segment_anything import sam_model_registry, SamPredictor
                 import torch
                 import cv2
             except ImportError:
-                error_msg = "未找到 SAM3 依赖库，请安装: pip install segment-anything torch torchvision"
+                error_msg = "未找到 SAM3 依赖库，请安装: pip install torch>=2.1.0 torchvision ultralytics>=8.2.0"
                 self.log_signal.emit(error_msg, "ERROR")
                 self.inference_complete_signal.emit(False, error_msg)
                 return
@@ -142,105 +141,59 @@ class SAM3InferenceThread(QThread):
             # 根据模型文件名确定模型类型
             model_filename = os.path.basename(self.model_path).lower()
             if "sm3" in model_filename or "sam3" in model_filename:
-                # 优先尝试使用Ultralytics SAM3/SM3模型
+                # 检查版本兼容性
                 try:
-                    from ultralytics import SAM
-                    self.log_signal.emit(f"检测到SM3/SAM3模型 ({model_filename})，使用Ultralytics SAM加载方式", "INFO")
-                    self.model = SAM(self.model_path)
-                    self.model.to(device=self.device)
-                    self.is_ultralytics_model = True
-                    self.log_signal.emit("Ultralytics SAM3模型加载成功", "SUCCESS")
-                except (ImportError, Exception) as e:
-                    # SAM3SemanticPredictor不可用，尝试旧版Ultralytics SAM
-                    self.log_signal.emit(f"SAM3SemanticPredictor加载失败: {e}，尝试旧版方式", "WARNING")
-                    try:
-                        from ultralytics import SAM
-                        self.log_signal.emit("尝试使用旧版Ultralytics SAM", "INFO")
-                        self.model = SAM(self.model_path)
-                        self.model.to(device=self.device)
-                        self.is_ultralytics_model = True
-                        self.log_signal.emit("旧版Ultralytics SAM加载成功", "SUCCESS")
-                    except Exception as e2:
-                        self.log_signal.emit(f"旧版Ultralytics SAM加载失败: {e2}，尝试使用Meta原始库", "WARNING")
-                    try:
-                        from segment_anything import sam_model_registry, SamPredictor
-                        model_type = "vit_h"
-                        if "vit_l" in model_filename:
-                            model_type = "vit_l"
-                        elif "vit_b" in model_filename:
-                            model_type = "vit_b"
-                        
-                        self.log_signal.emit(f"使用Meta SAM {model_type}模型", "INFO")
-                        sam = sam_model_registry[model_type](checkpoint=self.model_path)
-                        sam.to(device=self.device)
-                        self.model = SamPredictor(sam)
-                        self.is_ultralytics_model = False
-                        self.log_signal.emit("Meta SAM模型加载成功", "SUCCESS")
-                    except ImportError:
-                        error_msg = "未找到SAM依赖库，请安装: pip install segment-anything torch torchvision"
+                    import torch
+                    import ultralytics
+                    torch_version = tuple(map(int, torch.__version__.split('.')[:2]))
+                    ultralytics_version = tuple(map(int, ultralytics.__version__.split('.')[:2]))
+
+                    min_torch_version = (2, 1)
+                    min_ultralytics_version = (8, 2)
+
+                    version_ok = (torch_version >= min_torch_version and
+                                ultralytics_version >= min_ultralytics_version)
+
+                    if version_ok:
+                        self.log_signal.emit(f"环境版本检查通过: PyTorch {torch.__version__}, Ultralytics {ultralytics.__version__}", "INFO")
+                        # 使用Ultralytics SAM3/SM3模型
+                        try:
+                            from ultralytics import SAM
+                            self.log_signal.emit(f"检测到SM3/SAM3模型 ({model_filename})，使用Ultralytics SAM加载方式", "INFO")
+                            self.model = SAM(self.model_path)
+                            self.model.to(device=self.device)
+                            self.is_ultralytics_model = True
+                            self.log_signal.emit("Ultralytics SAM3模型加载成功", "SUCCESS")
+                        except Exception as e:
+                            error_msg = f"Ultralytics SAM3加载失败: {str(e)}"
+                            self.log_signal.emit(error_msg, "ERROR")
+                            self.log_signal.emit("请检查:", "INFO")
+                            self.log_signal.emit("1. 模型文件是否为Ultralytics格式的SAM3模型", "INFO")
+                            self.log_signal.emit("2. PyTorch版本是否>=2.1.0", "INFO")
+                            self.log_signal.emit("3. Ultralytics版本是否>=8.2.0", "INFO")
+                            self.inference_complete_signal.emit(False, error_msg)
+                            return
+                    else:
+                        error_msg = f"环境版本不足: PyTorch {torch.__version__} (需要>=2.1.0), Ultralytics {ultralytics.__version__} (需要>=8.2.0)"
                         self.log_signal.emit(error_msg, "ERROR")
+                        self.log_signal.emit("请升级依赖版本后再使用SAM3功能", "INFO")
                         self.inference_complete_signal.emit(False, error_msg)
                         return
-                    except Exception as e:
-                        error_msg = f"加载Meta SAM模型失败: {str(e)}"
-                        self.log_signal.emit(error_msg, "ERROR")
-                        self.inference_complete_signal.emit(False, error_msg)
-                        return
-                except Exception as e:
-                    error_msg = f"加载Ultralytics SAM3模型失败: {str(e)}"
+
+                except ImportError as e:
+                    error_msg = f"缺少必要的依赖库: {str(e)}"
                     self.log_signal.emit(error_msg, "ERROR")
-                    self.log_signal.emit("请检查模型文件是否为Ultralytics格式的SAM模型", "INFO")
+                    self.log_signal.emit("请安装: pip install torch>=2.1.0 ultralytics>=8.2.0", "INFO")
                     self.inference_complete_signal.emit(False, error_msg)
                     return
             else:
-                # 使用传统SAM模型
-                try:
-                    # 首先验证模型文件
-                    if not os.path.exists(self.model_path):
-                        error_msg = f"模型文件不存在: {self.model_path}"
-                        self.log_signal.emit(error_msg, "ERROR")
-                        self.inference_complete_signal.emit(False, error_msg)
-                        return
-
-                    # 检查文件大小（SAM模型通常很大）
-                    file_size = os.path.getsize(self.model_path) / (1024 * 1024)  # MB
-                    if file_size < 100:  # SAM模型通常超过100MB
-                        self.log_signal.emit(f"警告: 模型文件大小仅 {file_size:.1f}MB，SAM模型通常超过1GB", "WARNING")
-
-                    model_type = "vit_h"
-                    if "vit_l" in self.model_path.lower():
-                        model_type = "vit_l"
-                    elif "vit_b" in self.model_path.lower():
-                        model_type = "vit_b"
-
-                    self.log_signal.emit(f"使用传统SAM模型 ({model_type})", "INFO")
-                    sam = sam_model_registry[model_type](checkpoint=self.model_path)
-                    sam.to(device=self.device)
-                    self.model = SamPredictor(sam)
-                    self.is_ultralytics_model = False
-                    self.log_signal.emit("传统SAM模型加载成功", "SUCCESS")
-                except Exception as e:
-                    error_msg = f"加载Meta SAM模型失败: {str(e)}"
-                    self.log_signal.emit(error_msg, "ERROR")
-
-                    # 提供更详细的错误分析和建议
-                    error_str = str(e).lower()
-                    if "missing key" in error_str and "state_dict" in error_str:
-                        self.log_signal.emit("模型权重文件与期望的SAM架构不匹配", "ERROR")
-                        self.log_signal.emit("可能原因:", "INFO")
-                        self.log_signal.emit("1. 下载了SAM 2模型权重，但代码期望SAM 1", "INFO")
-                        self.log_signal.emit("2. 模型权重文件损坏或不完整", "INFO")
-                        self.log_signal.emit("3. 使用了其他类型的分割模型权重", "INFO")
-                        self.log_signal.emit("建议解决方案:", "INFO")
-                        self.log_signal.emit("- 下载正确的SAM 1模型权重文件", "INFO")
-                        self.log_signal.emit("- 确保使用vit_b/vit_l/vit_h版本的SAM模型", "INFO")
-                        self.log_signal.emit("- 检查模型文件是否完整下载", "INFO")
-                    elif "unexpected key" in error_str and "state_dict" in error_str:
-                        self.log_signal.emit("模型权重包含意外的参数", "ERROR")
-                        self.log_signal.emit("这通常表示使用了不兼容的模型类型", "INFO")
-
-                    self.inference_complete_signal.emit(False, error_msg)
-                    return
+                # 不支持传统SAM模型
+                error_msg = f"不支持的模型类型: {model_filename}"
+                self.log_signal.emit(error_msg, "ERROR")
+                self.log_signal.emit("SAM3推理仅支持Ultralytics格式的SAM3模型", "INFO")
+                self.log_signal.emit("请使用sam3.pt或sm3.pt格式的模型文件", "INFO")
+                self.inference_complete_signal.emit(False, error_msg)
+                return
             
             self.log_signal.emit("模型加载成功", "SUCCESS")
             self.progress_signal.emit(50)
@@ -267,28 +220,12 @@ class SAM3InferenceThread(QThread):
                     self.log_signal.emit(f"使用文字提示进行检索: '{self.text_prompt}'", "INFO")
 
                 masks, scores, logits, boxes = self._infer_ultralytics_sam3(image_rgb, self.text_prompt)
-
             else:
-                # 使用传统SAM模型
-                # 设置图像用于推理
-                self.model.set_image(image_rgb)
-                
-                # 如果有文字提示，使用文字提示进行物体检索
-                if self.text_prompt:
-                    self.log_signal.emit(f"使用文字提示进行检索: '{self.text_prompt}'", "INFO")
-                    masks, scores, logits = self._infer_with_text_prompt(
-                        self.model, image_rgb, self.text_prompt
-                    )
-                else:
-                    # 执行推理（自动分割）- 使用默认参数进行全自动分割
-                    self.log_signal.emit("使用自动分割模式", "INFO")
-                    masks, scores, logits = self.model.predict(
-                        point_coords=None,
-                        point_labels=None,
-                        box=None,
-                        multimask_output=False
-                    )
-                boxes = self._masks_to_boxes(masks)
+                # 不应该到达这里，因为我们只支持Ultralytics SAM3
+                error_msg = "不支持的模型类型"
+                self.log_signal.emit(error_msg, "ERROR")
+                self.inference_complete_signal.emit(False, error_msg)
+                return
 
             self.log_signal.emit(f"推理完成，获得 {len(masks)} 个掩码", "SUCCESS")
             self.progress_signal.emit(90)
@@ -315,7 +252,7 @@ class SAM3InferenceThread(QThread):
     def _infer_with_text_prompt(self, predictor, image_rgb, text_prompt, ultralytics=False):
         """
         基于文字提示进行物体检索
-        支持通过文字描述来检索图像中的特定物体
+        仅支持Ultralytics SAM3模型
         """
         try:
             import numpy as np
@@ -331,11 +268,11 @@ class SAM3InferenceThread(QThread):
                     else:
                         # 备选：使用call接口
                         results = predictor(image_rgb)
-                    
+
                     if results is None:
                         self.log_signal.emit("SAM3推理返回None", "WARNING")
                         return np.array([]), np.array([]), np.array([])
-                    
+
                     # 处理结果
                     if isinstance(results, list) and len(results) > 0:
                         result = results[0]
@@ -344,7 +281,7 @@ class SAM3InferenceThread(QThread):
                         masks = results.masks.data.cpu().numpy() if getattr(results, 'masks', None) is not None else np.array([])
                     else:
                         masks = np.array([])
-                    
+
                     scores = []
                     logits = []
 
@@ -381,7 +318,7 @@ class SAM3InferenceThread(QThread):
                         logits = np.array([0.0] * len(masks))
 
                     return masks, scores, logits
-                    
+
                 except Exception as e:
                     self.log_signal.emit(f"SAM3文本匹配异常: {e}，尝试简单推理", "WARNING")
                     # 降级处理：尝试简单推理
@@ -390,7 +327,7 @@ class SAM3InferenceThread(QThread):
                             results = predictor.predict(image_rgb)
                         else:
                             results = predictor(image_rgb)
-                        
+
                         if isinstance(results, list) and len(results) > 0:
                             result = results[0]
                             masks = result.masks.data.cpu().numpy() if hasattr(result, 'masks') else np.array([])
@@ -398,41 +335,19 @@ class SAM3InferenceThread(QThread):
                             masks = results.masks.data.cpu().numpy() if getattr(results, 'masks', None) is not None else np.array([])
                         else:
                             masks = np.array([])
-                        
+
                         return masks, np.array([1.0] * len(masks)), np.array([0.0] * len(masks))
                     except Exception as e2:
                         self.log_signal.emit(f"SAM3推理完全失败: {e2}", "ERROR")
                         return np.array([]), np.array([]), np.array([])
-
-            # 传统SAM文字提示（SamPredictor）
-            # 注意：Meta原始SAM不支持直接文字提示，这里使用自动分割
-            if text_prompt:
-                self.log_signal.emit(f"Meta SAM不支持直接文字提示 '{text_prompt}'，使用自动分割模式", "WARNING")
-            
-            masks, scores, logits = predictor.predict(
-                point_coords=None,
-                point_labels=None,
-                box=None,
-                multimask_output=True  # 获取多个掩码选项
-            )
-
-            if len(scores) > 0:
-                best_idx = np.argmax(scores)
-                best_mask = masks[best_idx:best_idx + 1]
-                best_score = scores[best_idx:best_idx + 1]
-                return best_mask, best_score, logits
             else:
-                return np.array([]), np.array([]), logits
+                # 不支持传统SAM模型
+                self.log_signal.emit("不支持传统SAM模型，仅支持Ultralytics SAM3", "ERROR")
+                return np.array([]), np.array([]), np.array([])
 
         except Exception as e:
-            self.log_signal.emit(f"文字提示处理失败，使用默认分割: {str(e)}", "WARNING")
-            masks, scores, logits = predictor.predict(
-                point_coords=None,
-                point_labels=None,
-                box=None,
-                multimask_output=False
-            )
-            return masks, scores, logits
+            self.log_signal.emit(f"文字提示处理失败: {str(e)}", "WARNING")
+            return np.array([]), np.array([]), np.array([])
 
     def _clip_rerank_masks(self, image_rgb, masks, text_prompt):
         """使用CLIP基于文本对候选掩码重排，支持中文语义匹配。"""

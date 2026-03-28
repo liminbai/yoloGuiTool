@@ -1298,7 +1298,7 @@ class YOLOInferenceWidget(QWidget):
 # SAM3 推理线程
 # ============================================
 class SAM3InferenceWidget(QWidget):
-    """SAM3 分割推理部件"""
+    """SAM3 分割推理部件 - 仅支持Ultralytics SAM3模型"""
     
     def __init__(self):
         super().__init__()
@@ -1410,20 +1410,17 @@ class SAM3InferenceWidget(QWidget):
         model_label = QLabel("SAM3 模型:")
         self.model_combo = QComboBox()
         self.model_combo.addItems([
-            "ViT-H (更精准，较慢) - sam_vit_h.pth",
-            "ViT-L (平衡) - sam_vit_l.pth",
-            "ViT-B (更快) - sam_vit_b.pth",
-            "SM3/SAM3 (最新模型) - *.pt"
+            "SM3/SAM3 (Ultralytics最新模型) - *.pt"
         ])
-        self.model_combo.setToolTip("选择 SAM3 模型大小，ViT-H 精度最高但速度较慢，SM3/SAM3是Ultralytics最新模型")
+        self.model_combo.setToolTip("仅支持Ultralytics SAM3模型，支持文字提示进行物体检索")
         self.model_combo.currentTextChanged.connect(self.on_model_changed)
         model_form.addRow(model_label, self.model_combo)
         
         # 模型路径
         path_layout = QHBoxLayout()
         self.model_path_edit = QLineEdit()
-        self.model_path_edit.setPlaceholderText("例如: /path/to/sam_vit_h.pth")
-        self.model_path_edit.setText(os.path.expanduser("~/.cache/sam/sam_vit_h.pth"))
+        self.model_path_edit.setPlaceholderText("例如: /path/to/sm3.pt 或 sam3.pt")
+        self.model_path_edit.setText(os.path.expanduser("~/.cache/ultralytics/"))
         
         self.browse_model_btn = QPushButton("浏览...")
         self.browse_model_btn.setFixedWidth(80)
@@ -1614,19 +1611,9 @@ class SAM3InferenceWidget(QWidget):
     
     def on_model_changed(self, text):
         """当模型选择改变时更新默认路径"""
-        if "SM3" in text or "SAM3" in text:
-            # SM3/SAM3模型使用不同的默认路径
-            self.model_path_edit.setText(os.path.expanduser("~/.cache/ultralytics/"))
-            self.model_path_edit.setPlaceholderText("例如: /path/to/sm3.pt 或 sam3.pt")
-        else:
-            # 传统SAM模型
-            if "ViT-H" in text:
-                self.model_path_edit.setText(os.path.expanduser("~/.cache/sam/sam_vit_h.pth"))
-            elif "ViT-L" in text:
-                self.model_path_edit.setText(os.path.expanduser("~/.cache/sam/sam_vit_l.pth"))
-            elif "ViT-B" in text:
-                self.model_path_edit.setText(os.path.expanduser("~/.cache/sam/sam_vit_b.pth"))
-            self.model_path_edit.setPlaceholderText("例如: /path/to/sam_vit_h.pth")
+        # 现在只支持SM3/SAM3模型
+        self.model_path_edit.setText(os.path.expanduser("~/.cache/ultralytics/"))
+        self.model_path_edit.setPlaceholderText("例如: /path/to/sm3.pt 或 sam3.pt")
     
     def run_inference(self):
         """运行推理"""
