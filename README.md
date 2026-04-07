@@ -1,4 +1,4 @@
-# AIToYolo GUI
+# AI To Yolo GUI
 
   本项目通过本地客户端界面的方式将ultralytics工程主流的模型应用做了可视化应用配置，希望能给喜欢YOLO的同学提供多一种选择。该程序几项特点：
 

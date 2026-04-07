@@ -2080,8 +2080,410 @@ class TrainingMonitorWidget(QWidget):
 
 
 # ============================================
-# YOLO训练器主窗口（支持YOLOv8、YOLOv11和YOLOv26）
+# 转换工具部件
 # ============================================
+class ConversionToolWidget(QWidget):
+    """转换工具部件 - 支持YOLO转ONNX和TensorRT"""
+    
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
+    
+    def init_ui(self):
+        """初始化用户界面"""
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # 创建选项卡用于不同转换工具
+        conversion_tabs = QTabWidget()
+        
+        # ONNX转换选项卡
+        onnx_tab = self._create_onnx_tab()
+        conversion_tabs.addTab(onnx_tab, "YOLO转ONNX")
+        
+        # TensorRT转换选项卡
+        tensorrt_tab = self._create_tensorrt_tab()
+        conversion_tabs.addTab(tensorrt_tab, "YOLO转TensorRT")
+        
+        main_layout.addWidget(conversion_tabs)
+        self.setLayout(main_layout)
+    
+    def _create_onnx_tab(self):
+        """创建ONNX转换选项卡"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # 模型选择区域
+        model_group = QGroupBox("🤖 模型选择")
+        model_group.setStyleSheet("font-size: 13px; color: #2c3e50;")
+        model_layout = QFormLayout()
+        model_layout.setHorizontalSpacing(10)
+        model_layout.setVerticalSpacing(8)
+        
+        # YOLO版本选择
+        self.onnx_model_family_combo = QComboBox()
+        self.onnx_model_family_combo.addItems(["YOLOv8", "YOLOv11", "YOLOv26"])
+        self.onnx_model_family_combo.setToolTip("选择要转换的YOLO版本")
+        model_layout.addRow("YOLO版本:", self.onnx_model_family_combo)
+        
+        # 模型文件选择
+        self.onnx_model_path_edit = QLineEdit()
+        self.onnx_model_path_edit.setPlaceholderText("选择YOLO模型文件 (.pt)")
+        self.onnx_model_browse_btn = QPushButton("浏览...")
+        self.onnx_model_browse_btn.clicked.connect(self._browse_onnx_model)
+        model_path_layout = QHBoxLayout()
+        model_path_layout.addWidget(self.onnx_model_path_edit)
+        model_path_layout.addWidget(self.onnx_model_browse_btn)
+        model_layout.addRow("模型文件:", model_path_layout)
+        
+        model_group.setLayout(model_layout)
+        layout.addWidget(model_group)
+        
+        # 转换参数区域
+        param_group = QGroupBox("⚙️ 转换参数")
+        param_group.setStyleSheet("font-size: 13px; color: #2c3e50;")
+        param_layout = QFormLayout()
+        param_layout.setHorizontalSpacing(10)
+        param_layout.setVerticalSpacing(8)
+        
+        # 输出路径
+        self.onnx_output_path_edit = QLineEdit()
+        self.onnx_output_path_edit.setPlaceholderText("选择ONNX文件保存位置")
+        self.onnx_output_browse_btn = QPushButton("浏览...")
+        self.onnx_output_browse_btn.clicked.connect(self._browse_onnx_output)
+        output_path_layout = QHBoxLayout()
+        output_path_layout.addWidget(self.onnx_output_path_edit)
+        output_path_layout.addWidget(self.onnx_output_browse_btn)
+        param_layout.addRow("输出路径:", output_path_layout)
+        
+        # 输入尺寸
+        self.onnx_input_size_spin = QSpinBox()
+        self.onnx_input_size_spin.setRange(32, 2048)
+        self.onnx_input_size_spin.setValue(640)
+        self.onnx_input_size_spin.setSingleStep(32)
+        param_layout.addRow("输入尺寸:", self.onnx_input_size_spin)
+        
+        # ONNX opset版本
+        self.onnx_opset_spin = QSpinBox()
+        self.onnx_opset_spin.setRange(9, 18)
+        self.onnx_opset_spin.setValue(17)
+        param_layout.addRow("ONNX Opset:", self.onnx_opset_spin)
+        
+        param_group.setLayout(param_layout)
+        layout.addWidget(param_group)
+        
+        # 转换按钮
+        convert_layout = QHBoxLayout()
+        convert_layout.addStretch()
+        
+        self.onnx_convert_btn = QPushButton("🚀 开始转换")
+        self.onnx_convert_btn.setMinimumHeight(40)
+        self.onnx_convert_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                font-weight: bold;
+                padding: 10px 20px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #229954;
+            }
+            QPushButton:disabled {
+                background-color: #95a5a6;
+            }
+        """)
+        self.onnx_convert_btn.clicked.connect(self._convert_to_onnx)
+        convert_layout.addWidget(self.onnx_convert_btn)
+        
+        layout.addLayout(convert_layout)
+        
+        # 状态显示
+        self.onnx_status_text = QTextEdit()
+        self.onnx_status_text.setMaximumHeight(150)
+        self.onnx_status_text.setReadOnly(True)
+        self.onnx_status_text.setPlaceholderText("转换状态和日志将显示在这里...")
+        layout.addWidget(self.onnx_status_text)
+        
+        tab.setLayout(layout)
+        return tab
+    
+    def _create_tensorrt_tab(self):
+        """创建TensorRT转换选项卡"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # 模型选择区域
+        model_group = QGroupBox("🤖 模型选择")
+        model_group.setStyleSheet("font-size: 13px; color: #2c3e50;")
+        model_layout = QFormLayout()
+        model_layout.setHorizontalSpacing(10)
+        model_layout.setVerticalSpacing(8)
+        
+        # YOLO版本选择
+        self.tensorrt_model_family_combo = QComboBox()
+        self.tensorrt_model_family_combo.addItems(["YOLOv8", "YOLOv11", "YOLOv26"])
+        self.tensorrt_model_family_combo.setToolTip("选择要转换的YOLO版本")
+        model_layout.addRow("YOLO版本:", self.tensorrt_model_family_combo)
+        
+        # 模型文件选择
+        self.tensorrt_model_path_edit = QLineEdit()
+        self.tensorrt_model_path_edit.setPlaceholderText("选择YOLO模型文件 (.pt)")
+        self.tensorrt_model_browse_btn = QPushButton("浏览...")
+        self.tensorrt_model_browse_btn.clicked.connect(self._browse_tensorrt_model)
+        model_path_layout = QHBoxLayout()
+        model_path_layout.addWidget(self.tensorrt_model_path_edit)
+        model_path_layout.addWidget(self.tensorrt_model_browse_btn)
+        model_layout.addRow("模型文件:", model_path_layout)
+        
+        model_group.setLayout(model_layout)
+        layout.addWidget(model_group)
+        
+        # 转换参数区域
+        param_group = QGroupBox("⚙️ 转换参数")
+        param_group.setStyleSheet("font-size: 13px; color: #2c3e50;")
+        param_layout = QFormLayout()
+        param_layout.setHorizontalSpacing(10)
+        param_layout.setVerticalSpacing(8)
+        
+        # 输出路径
+        self.tensorrt_output_path_edit = QLineEdit()
+        self.tensorrt_output_path_edit.setPlaceholderText("选择TensorRT文件保存位置")
+        self.tensorrt_output_browse_btn = QPushButton("浏览...")
+        self.tensorrt_output_browse_btn.clicked.connect(self._browse_tensorrt_output)
+        output_path_layout = QHBoxLayout()
+        output_path_layout.addWidget(self.tensorrt_output_path_edit)
+        output_path_layout.addWidget(self.tensorrt_output_browse_btn)
+        param_layout.addRow("输出路径:", output_path_layout)
+        
+        # 输入尺寸
+        self.tensorrt_input_size_spin = QSpinBox()
+        self.tensorrt_input_size_spin.setRange(32, 2048)
+        self.tensorrt_input_size_spin.setValue(640)
+        self.tensorrt_input_size_spin.setSingleStep(32)
+        param_layout.addRow("输入尺寸:", self.tensorrt_input_size_spin)
+        
+        # 精度选择
+        self.tensorrt_precision_combo = QComboBox()
+        self.tensorrt_precision_combo.addItems(["FP32", "FP16", "INT8"])
+        self.tensorrt_precision_combo.setCurrentText("FP16")
+        self.tensorrt_precision_combo.setToolTip("FP32: 最高精度，FP16: 平衡精度和速度，INT8: 最高速度")
+        param_layout.addRow("精度:", self.tensorrt_precision_combo)
+        
+        param_group.setLayout(param_layout)
+        layout.addWidget(param_group)
+        
+        # 转换按钮
+        convert_layout = QHBoxLayout()
+        convert_layout.addStretch()
+        
+        self.tensorrt_convert_btn = QPushButton("🚀 开始转换")
+        self.tensorrt_convert_btn.setMinimumHeight(40)
+        self.tensorrt_convert_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                font-weight: bold;
+                padding: 10px 20px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #229954;
+            }
+            QPushButton:disabled {
+                background-color: #95a5a6;
+            }
+        """)
+        self.tensorrt_convert_btn.clicked.connect(self._convert_to_tensorrt)
+        convert_layout.addWidget(self.tensorrt_convert_btn)
+        
+        layout.addLayout(convert_layout)
+        
+        # 状态显示
+        self.tensorrt_status_text = QTextEdit()
+        self.tensorrt_status_text.setMaximumHeight(150)
+        self.tensorrt_status_text.setReadOnly(True)
+        self.tensorrt_status_text.setPlaceholderText("转换状态和日志将显示在这里...")
+        layout.addWidget(self.tensorrt_status_text)
+        
+        tab.setLayout(layout)
+        return tab
+    
+    def _browse_onnx_model(self):
+        """浏览ONNX转换的模型文件"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择YOLO模型文件", "", "YOLO模型 (*.pt);;所有文件 (*)"
+        )
+        if file_path:
+            self.onnx_model_path_edit.setText(file_path)
+            # 自动设置输出路径
+            output_path = os.path.splitext(file_path)[0] + ".onnx"
+            self.onnx_output_path_edit.setText(output_path)
+    
+    def _browse_onnx_output(self):
+        """浏览ONNX输出路径"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "保存ONNX文件", "", "ONNX文件 (*.onnx);;所有文件 (*)"
+        )
+        if file_path:
+            self.onnx_output_path_edit.setText(file_path)
+    
+    def _browse_tensorrt_model(self):
+        """浏览TensorRT转换的模型文件"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择YOLO模型文件", "", "YOLO模型 (*.pt);;所有文件 (*)"
+        )
+        if file_path:
+            self.tensorrt_model_path_edit.setText(file_path)
+            # 自动设置输出路径
+            output_path = os.path.splitext(file_path)[0] + ".engine"
+            self.tensorrt_output_path_edit.setText(output_path)
+    
+    def _browse_tensorrt_output(self):
+        """浏览TensorRT输出路径"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "保存TensorRT文件", "", "TensorRT文件 (*.engine);;所有文件 (*)"
+        )
+        if file_path:
+            self.tensorrt_output_path_edit.setText(file_path)
+    
+    def _convert_to_onnx(self):
+        """执行ONNX转换"""
+        model_path = self.onnx_model_path_edit.text().strip()
+        output_path = self.onnx_output_path_edit.text().strip()
+        input_size = self.onnx_input_size_spin.value()
+        opset = self.onnx_opset_spin.value()
+        
+        if not model_path:
+            QMessageBox.warning(self, "错误", "请选择YOLO模型文件")
+            return
+        
+        if not output_path:
+            QMessageBox.warning(self, "错误", "请选择输出路径")
+            return
+        
+        if not os.path.exists(model_path):
+            QMessageBox.warning(self, "错误", f"模型文件不存在: {model_path}")
+            return
+        
+        # 禁用转换按钮
+        self.onnx_convert_btn.setEnabled(False)
+        self.onnx_convert_btn.setText("转换中...")
+        self.onnx_status_text.clear()
+        self.onnx_status_text.append("开始ONNX转换...")
+        
+        # 在后台线程中执行转换
+        import threading
+        threading.Thread(target=self._do_onnx_conversion, args=(model_path, output_path, input_size, opset), daemon=True).start()
+    
+    def _do_onnx_conversion(self, model_path, output_path, input_size, opset):
+        """执行ONNX转换的具体逻辑"""
+        try:
+            from ultralytics import YOLO
+            
+            self.onnx_status_text.append(f"加载模型: {model_path}")
+            model = YOLO(model_path)
+            
+            self.onnx_status_text.append(f"开始导出ONNX (输入尺寸: {input_size}, Opset: {opset})")
+            
+            # 执行导出
+            success = model.export(
+                format="onnx",
+                imgsz=input_size,
+                opset=opset,
+                save_dir=os.path.dirname(output_path),
+                name=os.path.splitext(os.path.basename(output_path))[0]
+            )
+            
+            if success:
+                self.onnx_status_text.append("✅ ONNX转换成功!")
+                self.onnx_status_text.append(f"输出文件: {output_path}")
+                QMessageBox.information(self, "成功", f"ONNX转换完成!\n输出文件: {output_path}")
+            else:
+                self.onnx_status_text.append("❌ ONNX转换失败")
+                QMessageBox.critical(self, "错误", "ONNX转换失败，请检查日志")
+                
+        except Exception as e:
+            error_msg = f"转换过程中出现错误: {str(e)}"
+            self.onnx_status_text.append(f"❌ {error_msg}")
+            QMessageBox.critical(self, "错误", error_msg)
+        finally:
+            # 恢复按钮状态
+            self.onnx_convert_btn.setEnabled(True)
+            self.onnx_convert_btn.setText("🚀 开始转换")
+    
+    def _convert_to_tensorrt(self):
+        """执行TensorRT转换"""
+        model_path = self.tensorrt_model_path_edit.text().strip()
+        output_path = self.tensorrt_output_path_edit.text().strip()
+        input_size = self.tensorrt_input_size_spin.value()
+        precision = self.tensorrt_precision_combo.currentText()
+        
+        if not model_path:
+            QMessageBox.warning(self, "错误", "请选择YOLO模型文件")
+            return
+        
+        if not output_path:
+            QMessageBox.warning(self, "错误", "请选择输出路径")
+            return
+        
+        if not os.path.exists(model_path):
+            QMessageBox.warning(self, "错误", f"模型文件不存在: {model_path}")
+            return
+        
+        # 禁用转换按钮
+        self.tensorrt_convert_btn.setEnabled(False)
+        self.tensorrt_convert_btn.setText("转换中...")
+        self.tensorrt_status_text.clear()
+        self.tensorrt_status_text.append("开始TensorRT转换...")
+        
+        # 在后台线程中执行转换
+        import threading
+        threading.Thread(target=self._do_tensorrt_conversion, args=(model_path, output_path, input_size, precision), daemon=True).start()
+    
+    def _do_tensorrt_conversion(self, model_path, output_path, input_size, precision):
+        """执行TensorRT转换的具体逻辑"""
+        try:
+            from ultralytics import YOLO
+            
+            self.tensorrt_status_text.append(f"加载模型: {model_path}")
+            model = YOLO(model_path)
+            
+            self.tensorrt_status_text.append(f"开始导出TensorRT (输入尺寸: {input_size}, 精度: {precision})")
+            
+            # 执行导出
+            success = model.export(
+                format="engine",
+                imgsz=input_size,
+                half=(precision == "FP16"),
+                int8=(precision == "INT8"),
+                save_dir=os.path.dirname(output_path),
+                name=os.path.splitext(os.path.basename(output_path))[0]
+            )
+            
+            if success:
+                self.tensorrt_status_text.append("✅ TensorRT转换成功!")
+                self.tensorrt_status_text.append(f"输出文件: {output_path}")
+                QMessageBox.information(self, "成功", f"TensorRT转换完成!\n输出文件: {output_path}")
+            else:
+                self.tensorrt_status_text.append("❌ TensorRT转换失败")
+                QMessageBox.critical(self, "错误", "TensorRT转换失败，请检查日志")
+                
+        except Exception as e:
+            error_msg = f"转换过程中出现错误: {str(e)}"
+            self.tensorrt_status_text.append(f"❌ {error_msg}")
+            QMessageBox.critical(self, "错误", error_msg)
+        finally:
+            # 恢复按钮状态
+            self.tensorrt_convert_btn.setEnabled(True)
+            self.tensorrt_convert_btn.setText("🚀 开始转换")
+
+
 class YOLOTrainerGUI(QMainWindow):
     """YOLO训练配置主窗口 - 支持YOLOv8、YOLOv11和YOLOv26"""
     
@@ -2101,7 +2503,7 @@ class YOLOTrainerGUI(QMainWindow):
         
     def init_ui(self):
         """初始化用户界面"""
-        self.setWindowTitle("YOLO 训练配置界面 - YOLOv8、YOLOv11和YOLOv26")
+        self.setWindowTitle("YOLO 训练与转换工具 - YOLOv8、YOLOv11和YOLOv26")
         self.setGeometry(100, 100, 1200, 800)
         
         # 创建菜单栏
@@ -2134,6 +2536,10 @@ class YOLOTrainerGUI(QMainWindow):
         # SAM3 分割推理选项卡
         self.sam3_widget = SAM3InferenceWidget()
         self.tab_widget.addTab(self.sam3_widget, "SAM3分割推理")
+        
+        # 转换工具选项卡
+        self.conversion_widget = ConversionToolWidget()
+        self.tab_widget.addTab(self.conversion_widget, "转换工具")
         
         # 连接标签页切换信号
         self.tab_widget.currentChanged.connect(self.on_tab_changed)
@@ -2991,8 +3397,8 @@ results = model.train(**train_args)"""
     
     def on_tab_changed(self, index):
         """处理标签页切换"""
-        # 当切换到推理验证标签页（第2个）或 SAM3 标签页（第3个）时，隐藏底部按钮
-        if index in [2, 3]:  # 推理验证标签页的索引为2，SAM3标签页的索引为3
+        # 当切换到推理验证标签页（第2个）、SAM3标签页（第3个）或转换工具标签页（第4个）时，隐藏底部按钮
+        if index in [2, 3, 4]:  # 推理验证标签页的索引为2，SAM3标签页的索引为3，转换工具标签页的索引为4
             # 隐藏底部按钮
             self.validate_btn.setVisible(False)
             self.save_config_btn.setVisible(False)
