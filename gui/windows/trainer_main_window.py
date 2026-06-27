@@ -1175,6 +1175,7 @@ class YOLOInferenceWidget(QWidget):
         )
         if file_path:
             self.model_combo.setCurrentText(file_path)
+            self.model_combo.setToolTip(file_path)
     
     def _get_params(self):
         """获取所有推理参数"""
@@ -1197,9 +1198,18 @@ class YOLOInferenceWidget(QWidget):
             QMessageBox.warning(self, "⚠️ 警告", "请先上传图片！")
             return
         
-        model_path = self.model_combo.currentText()
+        model_path = self.model_combo.currentText().strip()
         if not model_path:
             QMessageBox.warning(self, "⚠️ 警告", "请先选择模型！")
+            return
+
+        if not os.path.exists(model_path):
+            QMessageBox.warning(self, "⚠️ 警告", f"模型文件不存在：\n{model_path}")
+            return
+
+        ext = os.path.splitext(model_path)[1].lower()
+        if ext not in {".pt", ".onnx", ".engine", ".mlmodel"}:
+            QMessageBox.warning(self, "⚠️ 警告", "当前仅支持 YOLO 检测模型文件：.pt / .onnx / .engine / .mlmodel")
             return
         
         params = self._get_params()

@@ -1,6 +1,70 @@
 import os
 
-from PySide6.QtCore import QThread, Signal
+try:
+    from PySide6.QtCore import QThread, Signal
+except ImportError:  # pragma: no cover - fallback for test environments without Qt
+    from threading import Thread
+
+    class QThread(Thread):
+        def __init__(self):
+            super().__init__()
+
+    class Signal:
+        def __init__(self, *args, **kwargs):
+            self._slots = []
+
+        def connect(self, slot):
+            self._slots.append(slot)
+
+        def emit(self, *args, **kwargs):
+            for slot in self._slots:
+                slot(*args, **kwargs)
+
+
+def get_model_loading_kwargs(model_path):
+    """为 YOLO 检测模型统一返回加载参数，兼容 .pt/.onnx/.engine/.mlmodel。"""
+    if not model_path:
+        return {}
+
+    ext = os.path.splitext(model_path)[1].lower()
+    if ext in {".pt", ".onnx", ".engine", ".mlmodel"}:
+        return {"task": "detect"}
+    return {}
+
+
+def resolve_inference_device(model_path, requested_device):
+    """为 ONNX/engine 模型在自动模式下优先尝试 CUDA，失败时再回退到 CPU。"""
+    if not model_path:
+        return requested_device
+
+    ext = os.path.splitext(model_path)[1].lower()
+    if ext in {".onnx", ".engine"} and requested_device in {None, "", "auto"}:
+        return "cuda"
+
+    if ext == ".mlmodel" and requested_device in {None, "", "auto"}:
+        return "cpu"
+
+    if requested_device in {None, "", "auto"}:
+        return None
+
+    return requested_device
+
+
+def should_fallback_to_cpu(model_path, requested_device, error_message):
+    """判断是否应该在 CUDA Provider 初始化失败时回退到 CPU。"""
+    if not model_path or not error_message:
+        return False
+
+    ext = os.path.splitext(model_path)[1].lower()
+    if ext not in {".onnx", ".engine", ".mlmodel"}:
+        return False
+
+    if str(requested_device).lower() == "cpu":
+        return False
+
+    error_text = str(error_message).lower()
+    cuda_indicators = ["cuda", "cublas", "providers_cuda", "onnxruntime", "libonnxruntime_providers_cuda"]
+    return any(indicator in error_text for indicator in cuda_indicators)
 
 
 # ============================================
@@ -21,26 +85,48 @@ class YOLOInferenceThread(QThread):
     
     def run(self):
         try:
+            if not self.model_path or not os.path.exists(self.model_path):
+                raise FileNotFoundError(f"模型文件不存在: {self.model_path}")
+
             self.progress.emit("正在加载模型...")
             from ultralytics import YOLO
             import cv2
-            
-            model = YOLO(self.model_path)
+
+            model_kwargs = get_model_loading_kwargs(self.model_path)
+            model = YOLO(self.model_path, **model_kwargs)
             
             self.progress.emit("正在进行推理...")
-            device = None if self.params['device'] == "auto" else self.params['device']
+            requested_device = self.params['device']
+            device = resolve_inference_device(self.model_path, requested_device)
             
-            results = model(
-                self.image_path,
-                conf=self.params['conf'],
-                iou=self.params['iou'],
-                imgsz=self.params['imgsz'],
-                device=device,
-                max_det=self.params['max_det'],
-                agnostic_nms=self.params['agnostic_nms'],
-                augment=self.params['augment'],
-                half=self.params['half']
-            )
+            try:
+                results = model(
+                    self.image_path,
+                    conf=self.params['conf'],
+                    iou=self.params['iou'],
+                    imgsz=self.params['imgsz'],
+                    device=device,
+                    max_det=self.params['max_det'],
+                    agnostic_nms=self.params['agnostic_nms'],
+                    augment=self.params['augment'],
+                    half=self.params['half']
+                )
+            except Exception as inference_error:
+                if should_fallback_to_cpu(self.model_path, requested_device, str(inference_error)) and device != "cpu":
+                    self.progress.emit("检测到 CUDA 依赖缺失，已自动切换为 CPU 推理...")
+                    results = model(
+                        self.image_path,
+                        conf=self.params['conf'],
+                        iou=self.params['iou'],
+                        imgsz=self.params['imgsz'],
+                        device="cpu",
+                        max_det=self.params['max_det'],
+                        agnostic_nms=self.params['agnostic_nms'],
+                        augment=self.params['augment'],
+                        half=self.params['half']
+                    )
+                else:
+                    raise inference_error
             
             result_img = results[0].plot(
                 line_width=self.params['line_width'],
