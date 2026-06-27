@@ -2104,7 +2104,7 @@ class ConversionToolWidget(QWidget):
         
         # TensorRT转换选项卡
         tensorrt_tab = self._create_tensorrt_tab()
-        conversion_tabs.addTab(tensorrt_tab, "YOLO转TensorRT")
+        conversion_tabs.addTab(tensorrt_tab, "ONNX 转 TensorRT")
         
         main_layout.addWidget(conversion_tabs)
         self.setLayout(main_layout)
@@ -2233,13 +2233,13 @@ class ConversionToolWidget(QWidget):
         
         # 模型文件选择
         self.tensorrt_model_path_edit = QLineEdit()
-        self.tensorrt_model_path_edit.setPlaceholderText("选择YOLO模型文件 (.pt)")
+        self.tensorrt_model_path_edit.setPlaceholderText("选择ONNX模型文件 (.onnx)")
         self.tensorrt_model_browse_btn = QPushButton("浏览...")
         self.tensorrt_model_browse_btn.clicked.connect(self._browse_tensorrt_model)
         model_path_layout = QHBoxLayout()
         model_path_layout.addWidget(self.tensorrt_model_path_edit)
         model_path_layout.addWidget(self.tensorrt_model_browse_btn)
-        model_layout.addRow("模型文件:", model_path_layout)
+        model_layout.addRow("ONNX模型文件:", model_path_layout)
         
         model_group.setLayout(model_layout)
         layout.addWidget(model_group)
@@ -2336,7 +2336,7 @@ class ConversionToolWidget(QWidget):
     def _browse_tensorrt_model(self):
         """浏览TensorRT转换的模型文件"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择YOLO模型文件", "", "YOLO模型 (*.pt);;所有文件 (*)"
+            self, "选择ONNX模型文件", "", "ONNX模型 (*.onnx);;所有文件 (*)"
         )
         if file_path:
             self.tensorrt_model_path_edit.setText(file_path)
@@ -2386,10 +2386,10 @@ class ConversionToolWidget(QWidget):
         try:
             from ultralytics import YOLO
             
-            self.onnx_status_text.append(f"加载模型: {model_path}")
-            model = YOLO(model_path)
+            self._append_onnx_status_main_thread(f"加载模型: {model_path}")
+            model = YOLO(model_path, task="detect")
             
-            self.onnx_status_text.append(f"开始导出ONNX (输入尺寸: {input_size}, Opset: {opset})")
+            self._append_onnx_status_main_thread(f"开始导出ONNX (输入尺寸: {input_size}, Opset: {opset})")
             
             # 执行导出
             success = model.export(
@@ -2401,22 +2401,57 @@ class ConversionToolWidget(QWidget):
             )
             
             if success:
-                self.onnx_status_text.append("✅ ONNX转换成功!")
-                self.onnx_status_text.append(f"输出文件: {output_path}")
-                QMessageBox.information(self, "成功", f"ONNX转换完成!\n输出文件: {output_path}")
+                self._append_onnx_status_main_thread("✅ ONNX转换成功!")
+                self._append_onnx_status_main_thread(f"输出文件: {output_path}")
+                self._show_onnx_info_message_main_thread("成功", f"ONNX转换完成!\n输出文件: {output_path}")
             else:
-                self.onnx_status_text.append("❌ ONNX转换失败")
-                QMessageBox.critical(self, "错误", "ONNX转换失败，请检查日志")
+                self._append_onnx_status_main_thread("❌ ONNX转换失败")
+                self._show_onnx_error_message_main_thread("错误", "ONNX转换失败，请检查日志")
                 
         except Exception as e:
             error_msg = f"转换过程中出现错误: {str(e)}"
-            self.onnx_status_text.append(f"❌ {error_msg}")
-            QMessageBox.critical(self, "错误", error_msg)
+            self._append_onnx_status_main_thread(f"❌ {error_msg}")
+            self._show_onnx_error_message_main_thread("错误", error_msg)
         finally:
             # 恢复按钮状态
-            self.onnx_convert_btn.setEnabled(True)
-            self.onnx_convert_btn.setText("🚀 开始转换")
-    
+            self._set_onnx_button_enabled_main_thread(True)
+            self._set_onnx_button_text_main_thread("🚀 开始转换")
+
+    @Slot(str)
+    def _append_onnx_status(self, text):
+        self.onnx_status_text.append(text)
+
+    def _append_onnx_status_main_thread(self, text):
+        QMetaObject.invokeMethod(self, "_append_onnx_status", Qt.QueuedConnection, Q_ARG(str, text))
+
+    @Slot(bool)
+    def _set_onnx_button_enabled(self, enabled):
+        self.onnx_convert_btn.setEnabled(enabled)
+
+    def _set_onnx_button_enabled_main_thread(self, enabled):
+        QMetaObject.invokeMethod(self, "_set_onnx_button_enabled", Qt.QueuedConnection, Q_ARG(bool, enabled))
+
+    @Slot(str)
+    def _set_onnx_button_text(self, text):
+        self.onnx_convert_btn.setText(text)
+
+    def _set_onnx_button_text_main_thread(self, text):
+        QMetaObject.invokeMethod(self, "_set_onnx_button_text", Qt.QueuedConnection, Q_ARG(str, text))
+
+    @Slot(str, str)
+    def _show_onnx_info_message(self, title, message):
+        QMessageBox.information(self, title, message)
+
+    def _show_onnx_info_message_main_thread(self, title, message):
+        QMetaObject.invokeMethod(self, "_show_onnx_info_message", Qt.QueuedConnection, Q_ARG(str, title), Q_ARG(str, message))
+
+    @Slot(str, str)
+    def _show_onnx_error_message(self, title, message):
+        QMessageBox.critical(self, title, message)
+
+    def _show_onnx_error_message_main_thread(self, title, message):
+        QMetaObject.invokeMethod(self, "_show_onnx_error_message", Qt.QueuedConnection, Q_ARG(str, title), Q_ARG(str, message))
+
     def _convert_to_tensorrt(self):
         """执行TensorRT转换"""
         model_path = self.tensorrt_model_path_edit.text().strip()
@@ -2425,7 +2460,7 @@ class ConversionToolWidget(QWidget):
         precision = self.tensorrt_precision_combo.currentText()
         
         if not model_path:
-            QMessageBox.warning(self, "错误", "请选择YOLO模型文件")
+            QMessageBox.warning(self, "错误", "请选择ONNX模型文件")
             return
         
         if not output_path:
@@ -2449,39 +2484,94 @@ class ConversionToolWidget(QWidget):
     def _do_tensorrt_conversion(self, model_path, output_path, input_size, precision):
         """执行TensorRT转换的具体逻辑"""
         try:
-            from ultralytics import YOLO
+            self._append_tensorrt_status_main_thread(f"加载模型: {model_path}")
             
-            self.tensorrt_status_text.append(f"加载模型: {model_path}")
-            model = YOLO(model_path)
-            
-            self.tensorrt_status_text.append(f"开始导出TensorRT (输入尺寸: {input_size}, 精度: {precision})")
-            
-            # 执行导出
-            success = model.export(
-                format="engine",
-                imgsz=input_size,
-                half=(precision == "FP16"),
-                int8=(precision == "INT8"),
-                save_dir=os.path.dirname(output_path),
-                name=os.path.splitext(os.path.basename(output_path))[0]
-            )
-            
-            if success:
-                self.tensorrt_status_text.append("✅ TensorRT转换成功!")
-                self.tensorrt_status_text.append(f"输出文件: {output_path}")
-                QMessageBox.information(self, "成功", f"TensorRT转换完成!\n输出文件: {output_path}")
+            if model_path.lower().endswith(".onnx"):
+                from ultralytics.utils.export.engine import onnx2engine
+
+                self._append_tensorrt_status_main_thread(
+                    f"开始导出TensorRT (ONNX -> TensorRT, 输入尺寸: {input_size}, 精度: {precision})"
+                )
+                onnx2engine(
+                    model_path,
+                    output_path,
+                    workspace=None,
+                    half=(precision == "FP16"),
+                    int8=(precision == "INT8"),
+                    dynamic=False,
+                    shape=(1, 3, input_size, input_size),
+                    verbose=False,
+                    prefix="",
+                )
+                success = os.path.exists(output_path)
             else:
-                self.tensorrt_status_text.append("❌ TensorRT转换失败")
-                QMessageBox.critical(self, "错误", "TensorRT转换失败，请检查日志")
+                from ultralytics import YOLO
+
+                self._append_tensorrt_status_main_thread(f"开始导出TensorRT (输入尺寸: {input_size}, 精度: {precision})")
+                model = YOLO(model_path, task="detect")
+
+                # 执行导出
+                success = model.export(
+                    format="engine",
+                    imgsz=input_size,
+                    half=(precision == "FP16"),
+                    int8=(precision == "INT8"),
+                    save_dir=os.path.dirname(output_path),
+                    name=os.path.splitext(os.path.basename(output_path))[0],
+                )
+
+            if success:
+                self._append_tensorrt_status_main_thread("✅ TensorRT转换成功!")
+                self._append_tensorrt_status_main_thread(f"输出文件: {output_path}")
+                self._show_tensorrt_info_message_main_thread("成功", f"TensorRT转换完成!\n输出文件: {output_path}")
+            else:
+                self._append_tensorrt_status_main_thread("❌ TensorRT转换失败")
+                self._show_tensorrt_error_message_main_thread("错误", "TensorRT转换失败，请检查日志")
                 
         except Exception as e:
             error_msg = f"转换过程中出现错误: {str(e)}"
-            self.tensorrt_status_text.append(f"❌ {error_msg}")
-            QMessageBox.critical(self, "错误", error_msg)
+            self._append_tensorrt_status_main_thread(f"❌ {error_msg}")
+            self._show_tensorrt_error_message_main_thread("错误", error_msg)
         finally:
             # 恢复按钮状态
-            self.tensorrt_convert_btn.setEnabled(True)
-            self.tensorrt_convert_btn.setText("🚀 开始转换")
+            self._set_tensorrt_button_enabled_main_thread(True)
+            self._set_tensorrt_button_text_main_thread("🚀 开始转换")
+
+
+    @Slot(str)
+    def _append_tensorrt_status(self, text):
+        self.tensorrt_status_text.append(text)
+
+    def _append_tensorrt_status_main_thread(self, text):
+        QMetaObject.invokeMethod(self, "_append_tensorrt_status", Qt.QueuedConnection, Q_ARG(str, text))
+
+    @Slot(bool)
+    def _set_tensorrt_button_enabled(self, enabled):
+        self.tensorrt_convert_btn.setEnabled(enabled)
+
+    def _set_tensorrt_button_enabled_main_thread(self, enabled):
+        QMetaObject.invokeMethod(self, "_set_tensorrt_button_enabled", Qt.QueuedConnection, Q_ARG(bool, enabled))
+
+    @Slot(str)
+    def _set_tensorrt_button_text(self, text):
+        self.tensorrt_convert_btn.setText(text)
+
+    def _set_tensorrt_button_text_main_thread(self, text):
+        QMetaObject.invokeMethod(self, "_set_tensorrt_button_text", Qt.QueuedConnection, Q_ARG(str, text))
+
+    @Slot(str, str)
+    def _show_tensorrt_info_message(self, title, message):
+        QMessageBox.information(self, title, message)
+
+    def _show_tensorrt_info_message_main_thread(self, title, message):
+        QMetaObject.invokeMethod(self, "_show_tensorrt_info_message", Qt.QueuedConnection, Q_ARG(str, title), Q_ARG(str, message))
+
+    @Slot(str, str)
+    def _show_tensorrt_error_message(self, title, message):
+        QMessageBox.critical(self, title, message)
+
+    def _show_tensorrt_error_message_main_thread(self, title, message):
+        QMetaObject.invokeMethod(self, "_show_tensorrt_error_message", Qt.QueuedConnection, Q_ARG(str, title), Q_ARG(str, message))
 
 
 class YOLOTrainerGUI(QMainWindow):
