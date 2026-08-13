@@ -1,7 +1,7 @@
 services:
-  # ---------- 1. MongoDB（FiftyOne 依赖） ----------
+  # ---------- 1. MongoDB（FiftyOne 依赖，7.0 版本） ----------
   mongodb:
-    image: mongo:6.0
+    image: mongo:7.0
     container_name: fo-mongo
     restart: unless-stopped
     ports:
@@ -12,7 +12,7 @@ services:
     networks:
       - cv_pipeline_net
 
-  # ---------- 2. FiftyOne（数据集管理与 YOLO 导出） ----------
+  # ---------- 2. FiftyOne（数据集治理与数据管理） ----------
   fiftyone:
     image: voxel51/fiftyone:latest
     container_name: fo-dashboard
@@ -20,9 +20,10 @@ services:
     ports:
       - "5151:5151"
     volumes:
-      - ./fiftyone:/fiftyone              # FiftyOne 系统的数据库与缓存
-      - ./datasets/images:/media/images:ro         # 共享图片仓库（只读挂载）
-      - ./exports:/exports                    # 训练集导出目录
+      - ./datasets/fiftyone:/fiftyone          # FiftyOne 系统配置与缓存
+      - ./datasets/images:/media/images:ro     # 共享图像根目录（只读）
+      - ./fiftyone_scripts:/scripts            # 自定义 Python 脚本目录
+      - ./exports:/exports                    # YOLO 格式训练集导出目录
     environment:
       - FIFTYONE_DEFAULT_APP_ADDRESS=0.0.0.0
       - FIFTYONE_DATABASE_URI=mongodb://mongodb:27017
@@ -32,49 +33,7 @@ services:
     networks:
       - cv_pipeline_net
 
-  # ---------- 3. Label Studio（标注工具） ----------
-  label-studio:
-    image: heartexlabs/label-studio:latest
-    container_name: ls-annotate
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./datasets/label-studio:/label-studio/data # 系统全局数据持久化
-      - ./datasets/images:/media/images            # 共享图片仓库
-    environment:
-      - LABEL_STUDIO_ML_BACKENDS=http://sam2-backend:9090
-      - LOCAL_FILES_SERVING_ENABLED=true
-      - LOCAL_FILES_DOCUMENT_ROOT=/media/images
-    depends_on:
-      - sam2-backend
-    networks:
-      - cv_pipeline_net
-
-  # ---------- 4. SAM2 ML 后端（AI 辅助标注） ----------
-  sam2-backend:
-    image: heartexlabs/label-studio-ml-backend:latest
-    container_name: sam2-ml
-    restart: unless-stopped
-    ports:
-      - "9090:9090"
-    environment:
-      - MODEL_DIR=/models
-      - SAM2_CHECKPOINT=sam2_hiera_large.pt
-    volumes:
-      - ./models:/models
-      - ./datasets/images:/media/images:ro         # 推理读取共享图片库
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [ gpu ]
-    networks:
-      - cv_pipeline_net
-
-# 指定专用的 Bridge 网络，避开物理局域网 IP
+# 指定自定义桥接网段，避开局域网 IP 冲突
 networks:
   cv_pipeline_net:
     driver: bridge
