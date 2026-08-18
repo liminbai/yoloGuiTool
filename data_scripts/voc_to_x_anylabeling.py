@@ -3,7 +3,7 @@ import json
 import xml.etree.ElementTree as ET
 import argparse  # 新增命令行解析模块
 
-def voc_to_labelme(xml_dir, json_output_dir):
+def voc_to_x_anylabeling(xml_dir, json_output_dir):
     """
     将 Pascal VOC XML 格式批量转换为 LabelMe / X-AnyLabeling JSON 格式
     """
@@ -118,4 +118,4 @@ if __name__ == "__main__":
     # 可选参数：是否覆盖已有文件（默认跳过），为了简单暂不添加
     args = parser.parse_args()
 
-    voc_to_labelme(args.xml_dir, args.json_output_dir)
+    voc_to_x_anylabeling(args.xml_dir, args.json_output_dir)
