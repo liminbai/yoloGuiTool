@@ -6,6 +6,5 @@ if __name__ == "__main__":
         dataset_name="ppe_dataset",
         image_dir="/media/images/ppe",
         labels_dir="/media/images/ppe_xany",
-        tags=["raw_import", "incremental"],
+        tags=["raw_import"],
     )
-    print("✅ 增量导入完成！")

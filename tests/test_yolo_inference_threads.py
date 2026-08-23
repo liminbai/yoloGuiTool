@@ -3,11 +3,14 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import fiftyone as fo
+
 from gui.threads.yolo_inference_threads import (
     get_model_loading_kwargs,
     resolve_inference_device,
     should_fallback_to_cpu,
 )
+from fiftyone_scripts.anylabeling_import import ensure_ground_truth_field
 
 
 def test_get_model_loading_kwargs_for_supported_models_force_detect_task():
@@ -33,3 +36,18 @@ def test_should_fallback_to_cpu_for_cuda_provider_errors():
     assert should_fallback_to_cpu("/tmp/model.onnx", "auto", error) is True
     assert should_fallback_to_cpu("/tmp/model.pt", "auto", error) is False
     assert should_fallback_to_cpu("/tmp/model.onnx", "cpu", "some other error") is False
+
+
+def test_ensure_ground_truth_field_registers_detection_schema():
+    dataset_name = "tmp_ground_truth_schema_test"
+    if dataset_name in fo.list_datasets():
+        fo.delete_dataset(dataset_name)
+
+    ds = fo.Dataset(dataset_name)
+    ds.add_sample(fo.Sample(filepath="/tmp/example.jpg"))
+
+    ensure_ground_truth_field(ds)
+
+    schema = ds.get_field_schema()
+    assert "ground_truth" in schema
+    assert schema["ground_truth"].__class__.__name__ == "EmbeddedDocumentField"
