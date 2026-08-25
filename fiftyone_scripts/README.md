@@ -92,6 +92,73 @@ docker exec -it fo-dashboard /opt/.fiftyone-venv/bin/python /scripts/dataLoad.py
   --labels-dir /media/images/ppe_xany
 ```
 
+### 7. 数据集质量诊断工具
+
+`dataset_quality_tools.py` 位于当前目录，主要用于数据集清洗和质量检查，包含：
+
+- `dedup`：根据图像相似度检测重复样本
+- `search`：查找与指定样本最相似的图片
+- `analyze`：分析极小目标与极端宽高比标注框分布
+
+#### 7.1 去重
+
+```bash
+docker exec -it fo-dashboard \
+  /opt/.fiftyone-venv/bin/python \
+  /scripts/dataset_quality_tools.py \
+  --dataset ppe_dataset \
+  --action dedup \
+  --threshold 0.96
+```
+
+说明：
+- `--threshold` 可调节重复样本判定的相似度阈值。
+- 默认行为是添加 `duplicate` 标签，便于在 FiftyOne App 中筛选查看。
+
+#### 7.2 相似图搜索
+
+```bash
+docker exec -it fo-dashboard \
+  /opt/.fiftyone-venv/bin/python \
+  /scripts/dataset_quality_tools.py \
+  --dataset ppe_dataset \
+  --action search \
+  --target /media/images/ppe/image_001.jpg \
+  --k 10
+```
+
+也可传入 sample_id：
+
+```bash
+docker exec -it fo-dashboard \
+  /opt/.fiftyone-venv/bin/python \
+  /scripts/dataset_quality_tools.py \
+  --dataset ppe_dataset \
+  --action search \
+  --target 1234567890abcdef \
+  --k 10
+```
+
+#### 7.3 标注框分布分析
+
+```bash
+docker exec -it fo-dashboard \
+  /opt/.fiftyone-venv/bin/python \
+  /scripts/dataset_quality_tools.py \
+  --dataset ppe_dataset \
+  --action analyze
+```
+
+该功能会统计：
+- 极小目标框（占全图面积很小）
+- 极端长宽比框（如过宽或过高）
+
+#### 7.4 使用建议
+
+1. 先执行 `analyze`，快速发现明显的标注异常。
+2. 再执行 `dedup`，过滤高度重复样本。
+3. 对可疑样本执行 `search`，查看相似图片以确认是否存在误标或重复。
+
 ---
 
 ## 数据目录约定
