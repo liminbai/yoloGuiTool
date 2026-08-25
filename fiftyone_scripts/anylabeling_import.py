@@ -6,6 +6,17 @@ import fiftyone as fo
 ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
+def delete_dataset(dataset_name: str):
+    """
+    如果数据集存在，则将其从 FiftyOne 数据库中完全删除
+    """
+    if dataset_name in fo.list_datasets():
+        fo.delete_dataset(dataset_name)
+        print(f"🗑️ 已删除数据集 [{dataset_name}]")
+    else:
+        print(f"⚠️ 数据集 [{dataset_name}] 不存在，跳过删除")
+
+
 def ensure_ground_truth_field(dataset):
     schema = dataset.get_field_schema()
     if "ground_truth" not in schema:
@@ -31,20 +42,12 @@ def create_or_load_dataset(dataset_name: str):
     return dataset
 
 
-def delete_dataset(dataset_name: str):
-    if dataset_name in fo.list_datasets():
-        fo.delete_dataset(dataset_name)
-        print(f"🗑️ 已删除数据集 [{dataset_name}]")
-    else:
-        print(f"⚠️ 数据集 [{dataset_name}] 不存在，跳过删除")
-
-
 def parse_anylabeling_json(json_path: str):
     with open(json_path, "r", encoding="utf-8") as f:
         annotations = json.load(f)
 
-    image_width = annotations.get("imageWidth") or 1
-    image_height = annotations.get("imageHeight") or 1
+    image_width = float(annotations.get("imageWidth") or 1)
+    image_height = float(annotations.get("imageHeight") or 1)
     detections = []
 
     for shape in annotations.get("shapes", []):
@@ -65,6 +68,7 @@ def parse_anylabeling_json(json_path: str):
         if width <= 0 or height <= 0:
             continue
 
+        # 转换为 FiftyOne 所需的归一化边界框 [xmin, ymin, width, height]
         detections.append(
             fo.Detection(
                 label=label,
@@ -80,11 +84,21 @@ def parse_anylabeling_json(json_path: str):
     return fo.Detections(detections=detections)
 
 
-def import_images_with_anylabeling(dataset_name: str, image_dir: str, labels_dir: str, tags=None):
+def import_images_with_anylabeling(
+    dataset_name: str, 
+    image_dir: str, 
+    labels_dir: str, 
+    tags=None, 
+    overwrite=False
+):
     if tags is None:
         tags = ["raw_import"]
     elif isinstance(tags, str):
         tags = [tags]
+
+    # 如果指定 overwrite=True，先全量删除已存在的脏数据集
+    if overwrite:
+        delete_dataset(dataset_name)
 
     dataset = create_or_load_dataset(dataset_name)
     ensure_ground_truth_field(dataset)
@@ -95,6 +109,7 @@ def import_images_with_anylabeling(dataset_name: str, image_dir: str, labels_dir
     existing_filepaths = {str(Path(sample.filepath).resolve()) for sample in dataset}
     new_count = 0
 
+    # 1. 增量/批量添加图像
     for image_path in sorted(image_root.iterdir()):
         if not image_path.is_file() or image_path.suffix.lower() not in ALLOWED_IMAGE_SUFFIXES:
             continue
@@ -107,13 +122,11 @@ def import_images_with_anylabeling(dataset_name: str, image_dir: str, labels_dir
         existing_filepaths.add(image_abs_path)
         new_count += 1
 
+    # 2. 绑定 X-AnyLabeling 标注信息
+    updated_label_count = 0
     for sample in dataset:
-        try:
-            existing_labels = sample["ground_truth"]
-        except Exception:
-            existing_labels = None
-
-        if existing_labels is not None:
+        # 已存在有效的 ground_truth 则跳过
+        if sample.ground_truth is not None and len(sample.ground_truth.detections) > 0:
             continue
 
         sample_path = Path(sample.filepath)
@@ -122,13 +135,17 @@ def import_images_with_anylabeling(dataset_name: str, image_dir: str, labels_dir
             continue
 
         parsed = parse_anylabeling_json(str(json_path))
-        if len(parsed) == 0:
+        
+        # 修正：判断 parsed.detections 列表的长度
+        if len(parsed.detections) == 0:
             continue
 
+        # 写入字段并显式持久化保存
         sample["ground_truth"] = parsed
+        sample.save()  # 关键点：保存单个 sample 的修改
+        updated_label_count += 1
 
-    dataset.save()
-    print(f"✅ 本次增量导入完成：新增图像 {new_count} 张，当前数据集样本数: {len(dataset)}")
+    print(f"✅ 导入完成！新增图像: {new_count} 张，更新标注: {updated_label_count} 张，数据集当前总样本: {len(dataset)}")
     return dataset
 
 
@@ -138,4 +155,5 @@ if __name__ == "__main__":
         image_dir="/media/images/ppe",
         labels_dir="/media/images/ppe_xany",
         tags=["raw_import"],
+        overwrite=True,  # 首次测试如果想清空脏数据，建议设为 True
     )
