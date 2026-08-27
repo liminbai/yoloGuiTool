@@ -11,6 +11,17 @@ from gui.threads.yolo_inference_threads import (
     should_fallback_to_cpu,
 )
 from fiftyone_scripts.anylabeling_import import ensure_ground_truth_field
+from data_scripts.yolo_to_x_anylabeling import load_classes_from_yaml
+
+
+def test_load_classes_from_yaml_supports_coco_name_mapping(tmp_path):
+    yaml_path = tmp_path / "coco.yaml"
+    yaml_path.write_text(
+        "names:\n  0: person\n  1: bicycle\n  2: car\n",
+        encoding="utf-8",
+    )
+
+    assert load_classes_from_yaml(str(yaml_path)) == ["person", "bicycle", "car"]
 
 
 def test_get_model_loading_kwargs_for_supported_models_force_detect_task():
