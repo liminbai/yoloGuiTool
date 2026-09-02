@@ -67,11 +67,46 @@ docker exec -it fo-dashboard /opt/.fiftyone-venv/bin/python /scripts/dataLoad.py
 
 ### 3. 初次导入图片和 X-AnyLabeling 标注
 
+`00_import_anylabeling.py` 支持命令行参数，常用参数如下：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--dataset-name` | 数据集名称（默认 `ppe_dataset`） |
+| `--image-dir` | 源图片目录 |
+| `--labels-dir` | X-AnyLabeling JSON 标注目录 |
+| `-t/--tags` | 附加标签，可多个，如 `--tags raw_import incremental` |
+| `--overwrite` | 数据集已存在时先删除再全量导入（清空脏数据） |
+
+带参数直接运行：
+
+```bash
+docker exec -it fo-dashboard /opt/.fiftyone-venv/bin/python /scripts/00_import_anylabeling.py \
+  --dataset-name ppe_dataset \
+  --image-dir /media/images/ppe \
+  --labels-dir /media/images/ppe_xany \
+  --tags raw_import \
+  --overwrite
+```
+
+不带参数运行会进入交互输入模式，逐个询问图片目录、标注目录与标签；也可通过 `-h` 查看全部帮助：
+
 ```bash
 docker exec -it fo-dashboard /opt/.fiftyone-venv/bin/python /scripts/00_import_anylabeling.py
 ```
 
 ### 4. 增量追加新图片与新标注
+
+`01_append_data.py` 同样支持命令行参数（与 `00` 入口一致），区别在于默认标签为 `raw_import incremental`，且完成提示为"增量导入完成"。
+
+```bash
+docker exec -it fo-dashboard /opt/.fiftyone-venv/bin/python /scripts/01_append_data.py \
+  --dataset-name ppe_dataset \
+  --image-dir /media/images/ppe \
+  --labels-dir /media/images/ppe_xany \
+  --tags raw_import incremental
+```
+
+不带参数运行会进入交互输入模式，逐个询问图片目录、标注目录与标签；也可通过 `-h` 查看全部帮助：
 
 ```bash
 docker exec -it fo-dashboard /opt/.fiftyone-venv/bin/python /scripts/01_append_data.py
