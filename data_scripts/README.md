@@ -161,11 +161,13 @@ python copy_json_by_images.py \
 批量重命名 X-AnyLabeling 数据集中的图片和 JSON（二者可位于不同目录），
 重命名后**自动更新 JSON 内部的 `imagePath` 字段**。
 
-支持三种互斥的重命名模式：
+各操作可**自由组合**，处理流程为：先用通配符（可选）批量查找/筛出文件 →
+再做通配符替换（可选）→ 叠加前缀/后缀 → 或统一重排数字序列：
 
-1. **通配符替换**：`--find "IMG_*" --replace "photo_\1"`
-2. **前缀/后缀**：`--prefix new_` / `--suffix _v2`
-3. **数字序列**：`--start-num 1`（可配合 `--prefix` / `--suffix`）
+1. **通配符筛选**：`--find "IMG_*"` 只处理能匹配的文件（不带 `--replace` 时仅筛选、不改名）
+2. **通配符替换**：`--find "IMG_*" --replace "photo_\1"`
+3. **前缀/后缀**：`--prefix new_` / `--suffix _v2`
+4. **数字序列**：`--start-num 1`（可配合 `--prefix` / `--suffix`）
 
 **用法示例**：
 
@@ -185,6 +187,22 @@ python rename_xanylabeling_separate.py \
 python rename_xanylabeling_separate.py \
     --img-dir /path/to/images --json-dir /path/to/jsons \
     --start-num 1 --seq-width 4 --prefix img_
+
+# 组合：先通配符筛选，再统一加前缀/后缀
+python rename_xanylabeling_separate.py \
+    --img-dir /path/to/images --json-dir /path/to/jsons \
+    --find "IMG_*" --prefix day1_ --suffix _raw
+
+# 组合：只对 IMG_ 开头的文件重新编号（通配符筛选 + 前缀 + 重排数字序列）
+# 例：IMG_001.jpg -> photo_0100_v2.jpg（编号从 100 起，4 位补零）
+python rename_xanylabeling_separate.py \
+    --img-dir /path/to/images --json-dir /path/to/jsons \
+    --find "IMG_*" --start-num 100 --seq-width 4 --prefix photo_ --suffix _v2
+
+# 组合：先通配符替换，再叠加前缀/后缀
+python rename_xanylabeling_separate.py \
+    --img-dir /path/to/images --json-dir /path/to/jsons \
+    --find "IMG_*" --replace "photo_\1" --prefix day1_ --suffix _raw
 ```
 
 **参数**：
@@ -193,18 +211,21 @@ python rename_xanylabeling_separate.py \
 | --- | --- | --- |
 | `--img-dir` | ✅ | 图片目录 |
 | `--json-dir` | ✅ | JSON 目录 |
-| `--find` / `--replace` | 模式① | 通配符模式及替换串（`*` 匹配任意、`?` 匹配单字符，替换串可用 `\1` 引用） |
-| `--prefix` | 模式②③ | 添加的前缀 |
-| `--start-num` | 模式③ | 起始编号，启用数字序列模式 |
-| `--suffix` | - | 添加的后缀（扩展名前），仅非通配符模式有效 |
-| `--seq-width` | - | 数字序列位数，默认 4 |
+| `--find` | 可选 | 通配符筛选/替换条件（`*` 匹配任意、`?` 匹配单字符）；仅能匹配的文件会被处理，不带 `--replace` 时仅筛选 |
+| `--replace` | 可选 | 替换串（需与 `--find` 成对），可用 `\1` 引用捕获组 |
+| `--prefix` | 可选 | 添加的前缀，可与 `--find/--replace/--start-num` 组合 |
+| `--start-num` | 可选 | 起始编号，启用数字序列模式，对（筛选后的）文件统一重排为 前缀+序号+后缀 |
+| `--suffix` | 可选 | 添加的后缀（扩展名前），可与 `--find/--replace/--start-num` 组合 |
+| `--seq-width` | 可选 | 数字序列位数，默认 4 |
 | `--recursive` | - | 递归遍历图片子目录（JSON 仅在根目录查找） |
 | `--force` | - | 覆盖已存在的目标文件（默认跳过） |
 | `--dry-run` | - | 预览模式，不实际修改 |
 
 **补充说明**：
 
-- `--find` 与 `--replace` 必须成对出现；三者（通配符 / 前缀 / 数字序列）互斥。
+- `--replace` 必须与 `--find` 成对出现；`--find` 可单独使用（仅作为筛选条件）。
+- 编号按筛选后文件的排序顺序依次分配；给定 `--start-num` 时最终文件名以“前缀+序号+后缀”为准（忽略原名）。
+- 若最终文件名与原文件名相同（且无前缀/后缀变化），会自动跳过该文件。
 - JSON 与图片必须**同名**（位于 `--json-dir` 根目录）才会被处理。
 - 图片扩展名支持 `.jpg/.jpeg/.png/.bmp/.tif/.tiff/.webp`。
 
