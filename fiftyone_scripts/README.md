@@ -25,6 +25,12 @@
   - 启动 FiftyOne 可视化界面
   - 直接指定图片目录和标注目录进行导入
 
+- `02_export_yolo.py`  
+  导出入口，用于：
+  - 按 train/val 随机拆分导出 `yolo` / `coco-yaml`（ultralytics 可直接训练）
+  - 导出纯 `coco` 格式（仅用于数据交换）
+  - 自动生成 `coco.yaml` / `dataset.yaml` 训练配置
+
 ---
 
 ## 目标功能
@@ -193,6 +199,77 @@ docker exec -it fo-dashboard \
 1. 先执行 `analyze`，快速发现明显的标注异常。
 2. 再执行 `dedup`，过滤高度重复样本。
 3. 对可疑样本执行 `search`，查看相似图片以确认是否存在误标或重复。
+
+---
+
+## 8. 导出可直接训练的 YOLO / COCO 数据集
+
+`02_export_yolo.py` 负责把 FiftyOne 数据集按 train/val 拆分导出，并生成配置文件。
+
+### 8.1 格式对照
+
+| `--format` | 标注格式 | 能否直接 `yolo detect train` | 配置文件 |
+| --- | --- | --- | --- |
+| `yolo` | YOLO `.txt` | ✅ 可以 | `dataset.yaml` |
+| `coco-yaml` | YOLO `.txt` | ✅ 可以 | `coco.yaml` |
+| `coco` | COCO `labels.json` | ❌ 不可以（仅用于数据交换） | `coco.yaml` |
+
+> ultralytics 只读取与图片同级的 `labels/*.txt`，**不读** COCO 的 `labels.json`；
+> 它通过把图片路径里的 `images` 替换成 `labels` 来定位标注，所以图片必须在
+> `images/<split>`、标注必须在 `labels/<split>`。需要训练时请用 `yolo` 或 `coco-yaml`。
+
+### 8.2 导出
+
+```bash
+docker exec -it fo-dashboard \
+  /opt/.fiftyone-venv/bin/python \
+  /scripts/02_export_yolo.py \
+  --dataset-name fire_dataset \
+  --format coco-yaml \
+  --overwrite
+```
+
+导出结构：
+
+```text
+/exports/coco_yaml/fire_dataset/
+├── images/
+│   ├── train/
+│   └── val/
+├── labels/
+│   ├── train/
+│   └── val/
+└── coco.yaml
+```
+
+### 8.3 开始训练
+
+在宿主机上直接执行：
+
+```bash
+yolo detect train \
+  data=./exports/coco_yaml/fire_dataset/coco.yaml \
+  model=yolov8m.pt \
+  epochs=100 imgsz=640 batch=16 device=0
+```
+
+`coco.yaml` 中**不写** `path` 键，ultralytics 会以该 YAML 所在目录为基准解析
+`train`/`val`，因此整份导出目录可以直接拷贝或移动到其它机器上使用。
+
+### 8.4 常用参数
+
+| 参数 | 说明 |
+| --- | --- |
+| `--label-field` | 标注字段（默认 `ground_truth`） |
+| `--classes` | 类别列表；不传则自动从数据集推断 |
+| `--train-ratio` / `--val-ratio` | 拆分比例（默认 0.8 / 0.2） |
+| `--seed` | 随机划分种子（默认 42） |
+| `--max-samples` | 只导出随机 N 个样本，用于快速冒烟测试 |
+| `--overwrite` | 导出目录已存在时先清空，避免残留上一版图片/标注 |
+| `--skip-missing-media` | 跳过源图片缺失的样本，而不是中止导出 |
+
+> 重新导出时务必带 `--overwrite`，否则旧的图片和标注会残留在目录里。
+> `--splits` 对 `yolo` / `coco-yaml` 必须同时包含 `train` 和 `val`，脚本会提前校验。
 
 ---
 
