@@ -3,10 +3,28 @@ import fiftyone as fo
 # 禁用 FiftyOne / ETA 的严格包元数据检测（必须在加载 brain/zoo 模块之前设置）
 fo.config.requirement_error_level = 2
 import fiftyone.brain as fob
+import fiftyone.zoo as foz
 from fiftyone import ViewField as F
 
+# 相似度检索使用的特征模型：DINOv2 ViT-B/14（官方 model zoo 原生支持，纯视觉检索/近似重复更强）
+# 注意：
+#   1) 不建议用 ImageNet 分类模型（mobilenet-v2-imagenet-torch、resnet 等）做检索，
+#      它们的特征是分类导向的，做“相似图片”检索效果普遍偏差；
+#   2) 必须传模型**名字符串**而不是模型实例，否则会丢失文本查询能力（App 与后续会话不可用）；
+#   3) 更换模型后特征空间完全不同，brain_key 必须一起更换，不能复用旧索引。
+DEFAULT_SIMILARITY_MODEL = "dinov2-vitb14-torch"
+DEFAULT_SIMILARITY_BRAIN_KEY = "img_sim_dinov2_vitb14"
 
-def ensure_similarity_index(dataset, brain_key="img_sim", model="mobilenet-v2-imagenet-torch"):
+
+def suggest_zoo_models(keyword):
+    """列出 zoo 中名称包含 keyword 的模型，方便在模型名写错时快速纠正"""
+    try:
+        return sorted(n for n in foz.list_zoo_models() if keyword.lower() in n.lower())
+    except Exception:
+        return []
+
+
+def ensure_similarity_index(dataset, brain_key=DEFAULT_SIMILARITY_BRAIN_KEY, model=DEFAULT_SIMILARITY_MODEL):
     """检查或重建图像相似度索引"""
     
     # 检查索引是否存在且有效
@@ -22,26 +40,35 @@ def ensure_similarity_index(dataset, brain_key="img_sim", model="mobilenet-v2-im
     print(f"🔍 正在使用 [{model}] 提取特征并建立索引...")
     
     # 加上 num_workers=0 和 batch_size=16 彻底防止共享内存爆满
-    sim_index = fob.compute_similarity(
-        dataset,
-        model=model,
-        brain_key=brain_key,
-        batch_size=16,
-        num_workers=0
-    )
+    try:
+        sim_index = fob.compute_similarity(
+            dataset,
+            model=model,
+            brain_key=brain_key,
+            batch_size=16,
+            num_workers=0
+        )
+    except ValueError as e:
+        # 最常见原因：模型名不在 zoo 清单里（例如 mobilenet-v3-large-imagenet-torch）
+        print(f"❌ 模型 [{model}] 加载失败：{e}")
+        candidates = suggest_zoo_models(str(model).split("-")[0])
+        if candidates:
+            print(f"💡 zoo 中名称相近的可用模型：{candidates[:10]}")
+            print(f"   可用 --model 指定，例如 --model {candidates[0]}")
+        raise
     print("✅ 相似度索引建立完成！")
     return sim_index
 
 
-def remove_duplicates(dataset_name: str, threshold: float = 0.96, tag_only: bool = True):
+def remove_duplicates(dataset_name: str, threshold: float = 0.96, tag_only: bool = True, model=DEFAULT_SIMILARITY_MODEL):
     """
     自动标记或删除高度重复样本
     """
     dataset = fo.load_dataset(dataset_name)
-    brain_key = "img_sim"
+    brain_key = DEFAULT_SIMILARITY_BRAIN_KEY
     
     # 获取索引对象
-    sim_index = ensure_similarity_index(dataset, brain_key=brain_key)
+    sim_index = ensure_similarity_index(dataset, brain_key=brain_key, model=model)
 
     # 执行重复样本查找
     try:
@@ -84,13 +111,13 @@ def remove_duplicates(dataset_name: str, threshold: float = 0.96, tag_only: bool
         print("🗑️ 已成功从数据集完全删除重复样本！")
 
 
-def find_similar_to_image(dataset_name: str, sample_id_or_path: str, k: int = 10):
+def find_similar_to_image(dataset_name: str, sample_id_or_path: str, k: int = 10, model=DEFAULT_SIMILARITY_MODEL):
     """
     功能 2: Python 侧的 Sort by similarity（查找与指定图片最相似的 K 张图片）
     """
     dataset = fo.load_dataset(dataset_name)
-    brain_key = "img_sim"
-    ensure_similarity_index(dataset, brain_key=brain_key)
+    brain_key = DEFAULT_SIMILARITY_BRAIN_KEY
+    ensure_similarity_index(dataset, brain_key=brain_key, model=model)
 
     # 兼容传入 ID 或 路径
     if "/" in sample_id_or_path or "\\" in sample_id_or_path:
@@ -153,17 +180,19 @@ if __name__ == "__main__":
     
     # 额外参数
     parser.add_argument("--threshold", type=float, default=0.96, help="去重相似度阈值 (默认 0.96)")
+    parser.add_argument("--model", type=str, default=DEFAULT_SIMILARITY_MODEL,
+                        help=f"相似度索引使用的 FiftyOne zoo 模型名 (默认 {DEFAULT_SIMILARITY_MODEL})")
     parser.add_argument("--target", type=str, help="search 模式下的目标 sample_id 或 filepath")
     parser.add_argument("--k", type=int, default=10, help="search 模式下返回的最相似样本数")
 
     args = parser.parse_args()
 
     if args.action == "dedup":
-        remove_duplicates(args.dataset, threshold=args.threshold, tag_only=True)
+        remove_duplicates(args.dataset, threshold=args.threshold, tag_only=True, model=args.model)
     elif args.action == "search":
         if not args.target:
             print("❌ 错误：使用 search 功能时必须指定 --target (sample_id 或 图片路径)")
         else:
-            find_similar_to_image(args.dataset, args.target, k=args.k)
+            find_similar_to_image(args.dataset, args.target, k=args.k, model=args.model)
     elif args.action == "analyze":
         analyze_box_distribution(args.dataset)

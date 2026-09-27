@@ -24,7 +24,10 @@ services:
       - ./datasets/images:/media/images:ro     # 共享图像根目录（只读）
       - ./fiftyone_scripts:/scripts            # 自定义 Python 脚本目录
       - ./exports:/exports                    # YOLO 格式训练集导出目录
+    gpus: all
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - FIFTYONE_DEFAULT_APP_ADDRESS=0.0.0.0
       - FIFTYONE_DATABASE_URI=mongodb://mongodb:27017
     depends_on:
