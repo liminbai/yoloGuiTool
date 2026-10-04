@@ -12,6 +12,11 @@ def main():
     parser.add_argument("--image-dir", type=str, help="Directory containing source images")
     parser.add_argument("--labels-dir", type=str, help="Directory containing X-AnyLabeling JSON labels")
     parser.add_argument("--dataset-name", type=str, default="ppe_dataset", help="Dataset name used for import")
+    parser.add_argument(
+        "--refresh-labels",
+        action="store_true",
+        help="Ignore existing labels and re-parse all sample JSON files (backfill polygons)",
+    )
     parser.add_argument("--launch", action="store_true", help="Launch the FiftyOne app after import")
     args = parser.parse_args()
 
@@ -29,6 +34,7 @@ def main():
             image_dir=args.image_dir,
             labels_dir=args.labels_dir,
             tags=["raw_import"],
+            refresh_labels=args.refresh_labels,
         )
 
     if args.launch:

@@ -34,6 +34,27 @@
             data/*.jpg
             labels.json
         coco.yaml
+
+`yolo-seg` 用于 **YOLOv8/YOLO11 实例分割（segment）训练**，默认从
+``ground_truth_polygons``（Polylines）字段导出多边形，标签为 YOLO-seg 格式::
+
+    <export_dir>/
+        images/train/*.jpg
+        images/val/*.jpg
+        labels/train/*.txt      # <class> <x1> <y1> <x2> <y2> ... （归一化多边形顶点）
+        labels/val/*.txt
+        data.yaml
+
+    训练命令::
+
+        yolo segment train data=<export_dir>/data.yaml model=yolov8m-seg.pt epochs=100 imgsz=640
+
+ultralytics 8.4 对分割标签的三条硬约束（已在本脚本里做前置检查/兜底）：
+
+1. 一行 tokens 数 > 6 才会被判定为分割行（即 ``class + 3 个点`` 起步）；只有 2 个点的
+   多边形会被误读成检测框，必须剔除；
+2. 同一文件里混用 5 tokens 的检测行与 7+ tokens 的分割行会直接断言失败；
+3. 坐标必须在 ``[-0.01, 1.01]`` 内，超出会中止整个数据集的校验。
 """
 import argparse
 import json
@@ -47,6 +68,8 @@ import fiftyone.utils.random as four
 
 DEFAULT_DATASET_NAME = "ppe_dataset"
 DEFAULT_LABEL_FIELD = "ground_truth"
+# YOLO-seg 默认使用的多边形字段（由 anylabeling_import.py 写入）
+DEFAULT_POLYGON_LABEL_FIELD = "ground_truth_polygons"
 # None 表示"自动从数据集中推断类别"。
 # 注意：COCO 导出器会静默丢弃不在 classes 列表中的标签，
 # 所以除非确实要裁剪类别，否则不要硬编码类别列表。
@@ -57,15 +80,21 @@ DEFAULT_TRAIN_RATIO = 0.8
 DEFAULT_VAL_RATIO = 0.2
 DEFAULT_SPLITS = ["train", "val"]
 
+# 需要多边形标注的导出格式（实例分割）
+SEG_FORMATS = frozenset({"yolo-seg"})
+
 # COCO 标注文件名（FiftyOne 默认写在 export_dir 根目录下）
 COCO_LABELS_FILENAME = "labels.json"
 # 各格式图片所在子目录名，与 FiftyOne 各导出器的默认布局保持一致
 YOLO_IMAGES_DIRNAME = "images"
+YOLO_LABELS_DIRNAME = "labels"
 COCO_IMAGES_DIRNAME = "data"
 # 使用 images/<split> + labels/<split> 布局（ultralytics 可直接训练）的格式
-YOLO_LAYOUT_FORMATS = {"yolo", "coco-yaml"}
+YOLO_LAYOUT_FORMATS = {"yolo", "coco-yaml", "yolo-seg"}
 # ultralytics 强制要求 train/val 同时存在，否则 check_det_dataset 直接报 SyntaxError
 ULTRALYTICS_REQUIRED_SPLITS = ("train", "val")
+# ultralytics 判定"分割行"的最小 tokens 数：class + 3 个 (x, y) 点 = 7
+SEG_MIN_ROW_TOKENS = 7
 
 
 def build_parser():
@@ -78,13 +107,17 @@ def build_parser():
             "  python 02_export_yolo.py --dataset-name ppe_dataset --format coco-yaml --overwrite\n"
             "  python 02_export_yolo.py --dataset-name ppe_dataset --format coco-yaml "
             "--classes helmet vest person\n"
+            "  python 02_export_yolo.py --dataset-name puddle_dataset --format yolo-seg "
+            "--overwrite\n"
             "\n"
-            "yolo / coco-yaml 导出目录结构（ultralytics 可直接训练）：\n"
+            "yolo / coco-yaml / yolo-seg 导出目录结构（ultralytics 可直接训练）：\n"
             "  <export-dir>/images/train/*.jpg + images/val/*.jpg\n"
             "  <export-dir>/labels/train/*.txt + labels/val/*.txt\n"
             "  <export-dir>/coco.yaml    （或 dataset.yaml）\n"
+            "  <export-dir>/data.yaml    （yolo-seg）\n"
             "\n"
             "  yolo detect train data=<export-dir>/coco.yaml model=yolov8m.pt epochs=100 imgsz=640\n"
+            "  yolo segment train data=<export-dir>/data.yaml model=yolov8m-seg.pt epochs=100 imgsz=640\n"
             "\n"
             "coco 导出目录结构（仅供数据交换，不能直接训练）：\n"
             "  <export-dir>/train/data/*.jpg + labels.json\n"
@@ -93,18 +126,23 @@ def build_parser():
             "\n"
             "说明：\n"
             "  - 不传 --classes 时自动从数据集推断类别；\n"
-            "  - COCO 导出器会丢弃不在 classes 中的标签，手写 --classes 时务必与数据一致。\n"
+            "  - COCO 导出器会丢弃不在 classes 中的标签，手写 --classes 时务必与数据一致；\n"
+            "  - yolo-seg 需要多边形标注：默认字段为 "
+            f"{DEFAULT_POLYGON_LABEL_FIELD}（Polylines）；\n"
+            "    该字段由 00_import_anylabeling.py / 01_append_data.py 导入 polygon 标注时写入。\n"
         ),
     )
 
     parser.add_argument("--dataset-name", type=str, default=DEFAULT_DATASET_NAME,
                         help=f"FiftyOne 数据集名称（默认：{DEFAULT_DATASET_NAME}）")
-    parser.add_argument("--label-field", type=str, default=DEFAULT_LABEL_FIELD,
-                        help=f"数据集标注字段（默认：{DEFAULT_LABEL_FIELD}）")
+    parser.add_argument("--label-field", type=str, default=None,
+                        help="数据集标注字段；不传时 yolo/coco/coco-yaml 默认 "
+                             f"{DEFAULT_LABEL_FIELD}，yolo-seg 默认 {DEFAULT_POLYGON_LABEL_FIELD}")
     parser.add_argument("--format", type=str, default=DEFAULT_FORMAT,
-                        choices=["yolo", "coco", "coco-yaml"],
-                        help="导出的数据集格式：yolo / coco / coco-yaml"
-                             "（yolo 与 coco-yaml 都可用于 ultralytics 训练，默认：yolo）")
+                        choices=["yolo", "coco", "coco-yaml", "yolo-seg"],
+                        help="导出的数据集格式：yolo / coco / coco-yaml / yolo-seg"
+                             "（yolo、coco-yaml 用于检测训练，yolo-seg 用于实例分割训练，"
+                             "默认：yolo）")
     parser.add_argument("--export-dir", type=str, default=None,
                         help=f"导出目录；若不传则自动构建为 {DEFAULT_EXPORT_DIR}/"
                              "<format>/<dataset-name>")
@@ -142,6 +180,9 @@ def resolve_format(format_name):
         "yolo": fo.types.YOLOv5Dataset,
         "coco": fo.types.COCODetectionDataset,
         "coco-yaml": fo.types.YOLOv5Dataset,
+        # 实例分割同样走 YOLOv5Dataset：FiftyOne 的 YOLOAnnotationWriter 对
+        # fol.Polylines 会写出 "class x1 y1 x2 y2 ..." 的 YOLO-seg 多边形行
+        "yolo-seg": fo.types.YOLOv5Dataset,
     }
 
     if format_name not in format_map:
@@ -177,9 +218,36 @@ def uses_yolo_layout(format_name):
     return format_name in YOLO_LAYOUT_FORMATS
 
 
+def is_seg_format(format_name):
+    """该格式是否要求多边形（Polylines）标注。"""
+    return format_name in SEG_FORMATS
+
+
+def default_label_field(format_name):
+    """返回该格式默认使用的标注字段。"""
+    return DEFAULT_POLYGON_LABEL_FIELD if is_seg_format(format_name) else DEFAULT_LABEL_FIELD
+
+
 def yaml_filename(format_name):
     """返回该格式的配置文件名称（ultralytics 不关心文件名，只关心内容）。"""
-    return "dataset.yaml" if format_name == "yolo" else "coco.yaml"
+    if format_name == "yolo":
+        return "dataset.yaml"
+    if is_seg_format(format_name):
+        return "data.yaml"
+    return "coco.yaml"
+
+
+def label_kind(view, label_field):
+    """返回标注字段的类型（``detections`` / ``polylines``），用于拼接聚合路径。
+
+    Detection 字段用 ``<field>.detections.label``，Polyline 字段用
+    ``<field>.polylines.label``，两者不能混用（FiftyOne 的 distinct/count 会返回空）。
+    """
+    field = view.get_field(label_field)
+    document_type = getattr(field, "document_type", None)
+    if document_type is not None and issubclass(document_type, fo.Polylines):
+        return "polylines"
+    return "detections"
 
 
 def validate_splits(format_name, splits):
@@ -196,7 +264,10 @@ def validate_splits(format_name, splits):
 
 
 def default_export_dir(format_name, dataset_name):
-    fmt_alias = "coco_yaml" if format_name == "coco-yaml" else format_name
+    # 目录名统一用下划线，避免 '-' 在 shell/路径里带来歧义
+    fmt_alias = {"coco-yaml": "coco_yaml", "yolo-seg": "yolo_seg"}.get(
+        format_name, format_name
+    )
     return os.path.join(DEFAULT_EXPORT_DIR, fmt_alias, dataset_name)
 
 
@@ -218,17 +289,17 @@ def clear_dir(path, overwrite):
         )
 
 
-def resolve_classes(view, label_field, classes):
+def resolve_classes(view, label_field, classes, kind):
     """确定最终使用的类别列表。
 
     COCO 导出器对不在 classes 中的标签只告警并跳过，
     这里显式提示，避免出现"图片导出了、labels.json 里却没有标注"的情况。
     """
-    observed = sorted(view.distinct(f"{label_field}.detections.label"))
+    observed = sorted(view.distinct(f"{label_field}.{kind}.label"))
 
     if not observed:
         raise ValueError(
-            f"数据集 {view.dataset.name} 的 {label_field} 字段中没有 detections 标注"
+            f"数据集 {view.dataset.name} 的 {label_field} 字段中没有 {kind} 标注"
         )
 
     if classes:
@@ -247,6 +318,157 @@ def resolve_classes(view, label_field, classes):
 
     print(f"ℹ️ 未指定 --classes，自动从数据集推断类别: {observed}")
     return observed
+
+
+def check_polygons(view, label_field):
+    """过滤掉没有任何可用多边形的样本（YOLO-seg 前置检查）。
+
+    ultralytics 只把「tokens 数 > 6」（即 class + ≥3 个点）的行当作分割行，
+    少于 3 个点的多边形会被误读成检测框，甚至触发
+    "labels mix segment and detection rows" 断言，因此这些样本不能进入导出。
+    """
+    ids = view.values("id")
+    # 取整个字段（Polylines），而不是子字段：.polylines 子字段返回的是 Polyline 列表
+    labels = view.values(label_field)
+
+    keep_ids = []
+    dropped = 0
+    degenerate = 0
+    for sample_id, polygons in zip(ids, labels):
+        shapes = (
+            [shape for polyline in polygons.polylines for shape in polyline.points]
+            if polygons is not None
+            else []
+        )
+        valid = [shape for shape in shapes if len(shape) >= 3]
+        degenerate += len(shapes) - len(valid)
+
+        if valid:
+            keep_ids.append(sample_id)
+        else:
+            dropped += 1
+
+    if degenerate:
+        print(
+            f"⚠️ 有 {degenerate} 个多边形的顶点数少于 3，不符合 YOLO-seg 格式，将被忽略",
+            file=sys.stderr,
+        )
+
+    if dropped:
+        print(
+            f"ℹ️ 已剔除 {dropped} 个没有可用多边形的样本，剩余 {len(keep_ids)} 个",
+            file=sys.stderr,
+        )
+
+    return view.select(keep_ids)
+
+
+def verify_and_fix_seg_labels(export_dir, splits, num_classes):
+    """校验并修正导出的 YOLO-seg 标签，返回 (是否通过, 统计信息)。
+
+    FiftyOne 的 YOLOAnnotationWriter 只是把多边形顶点原样写出去，不做任何校验，
+    而 ultralytics 在数据集校验阶段会直接断言失败：
+    - 坐标必须落在 [-0.01, 1.01]，否则整个数据集校验中止（这里统一裁剪到 [0, 1]）；
+    - 分割行必须 ≥3 个点（这里删除不合法的行）。
+    """
+    stats = {}
+    ok = True
+
+    for split in splits:
+        images_dir = os.path.join(export_dir, YOLO_IMAGES_DIRNAME, split)
+        labels_dir = os.path.join(export_dir, YOLO_LABELS_DIRNAME, split)
+
+        image_stems = _file_stems(images_dir)
+        label_stems = _file_stems(labels_dir)
+
+        missing_labels = sorted(image_stems - label_stems)
+        extra_labels = sorted(label_stems - image_stems)
+
+        objects = 0
+        clamped_rows = 0
+        dropped_rows = 0
+        for stem in sorted(label_stems):
+            txt_path = os.path.join(labels_dir, stem + ".txt")
+            rows, rows_clamped, rows_dropped = _sanitize_seg_rows(txt_path, num_classes)
+            objects += len(rows)
+            clamped_rows += rows_clamped
+            dropped_rows += rows_dropped
+
+            if rows_dropped:
+                _write_lines(txt_path, rows)
+
+        stats[split] = {
+            "images": len(image_stems),
+            "labels": len(label_stems),
+            "objects": objects,
+            "clamped_rows": clamped_rows,
+            "dropped_rows": dropped_rows,
+            "missing_labels": missing_labels,
+            "extra_labels": extra_labels,
+        }
+
+        if missing_labels or extra_labels or dropped_rows or not objects:
+            ok = False
+
+    return ok, stats
+
+
+def _file_stems(directory):
+    if not os.path.isdir(directory):
+        return set()
+
+    return {
+        os.path.splitext(name)[0]
+        for name in os.listdir(directory)
+        if os.path.isfile(os.path.join(directory, name))
+    }
+
+
+def _sanitize_seg_rows(txt_path, num_classes):
+    """按 ultralytics 的约束清洗单个标签文件，返回 (行, 被裁剪行数, 被删除行数)。"""
+    rows = []
+    clamped = 0
+    dropped = 0
+
+    with open(txt_path, "r", encoding="utf-8") as f:
+        lines = [line.strip() for line in f if line.strip()]
+
+    for line in lines:
+        tokens = line.split()
+
+        # 至少 class + 3 个点；且 tokens 数必须为奇数（class + 2n 个坐标）
+        if len(tokens) < SEG_MIN_ROW_TOKENS or len(tokens) % 2 == 0:
+            dropped += 1
+            continue
+
+        try:
+            class_id = int(float(tokens[0]))
+            coords = [float(value) for value in tokens[1:]]
+        except ValueError:
+            dropped += 1
+            continue
+
+        if not 0 <= class_id < num_classes:
+            dropped += 1
+            continue
+
+        fixed = []
+        for value in coords:
+            if value < 0.0 or value > 1.0:
+                value = min(max(value, 0.0), 1.0)
+                clamped += 1
+            fixed.append(value)
+
+        rows.append(
+            " ".join([str(class_id)] + [f"{value:.6f}" for value in fixed])
+        )
+
+    return rows, clamped, dropped
+
+
+def _write_lines(txt_path, rows):
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(rows))
 
 
 def check_media(view, skip_missing=False):
@@ -318,7 +540,7 @@ def export_split(view, split, target_dir, format_name, dataset_type, label_field
     return target_dir
 
 
-def write_yaml_config(yaml_path, dataset_name, format_name, entries, classes):
+def write_yaml_config(yaml_path, dataset_name, format_name, entries, classes, extra_comments=None):
     """写出 ultralytics 可直接训练的 YAML 配置。
 
     已用 ultralytics 8.4 实测验证过的三条约束：
@@ -331,14 +553,15 @@ def write_yaml_config(yaml_path, dataset_name, format_name, entries, classes):
 
     Args:
         entries: [(split_name, relative_images_dir, ratio), ...]
+        extra_comments: 额外的注释行（ultralytics 只读 train/val/nc/names）
     """
     lines = [
-        "# 由 fiftyone_scripts/02_export_yolo.py 自动生成，可直接用于 ultralytics 训练：",
-        "#   yolo detect train data=<该 yaml 的路径> model=yolov8m.pt epochs=100 imgsz=640",
+        "# 由 fiftyone_scripts/02_export_yolo.py 自动生成，可直接用于 ultralytics 训练。",
         f"# dataset_name: {dataset_name}",
         f"# format: {format_name}",
-        "",
     ]
+    lines.extend(extra_comments or [])
+    lines.append("")
 
     for split, rel_dir, ratio in entries:
         lines.append(f"# {split} 占比 {ratio:.4f}")
@@ -378,6 +601,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     format_name = args.format
+    label_field = args.label_field or default_label_field(format_name)
     ratios = resolve_ratios(args)
     dataset_type = resolve_format(format_name)
 
@@ -389,26 +613,43 @@ def main(argv=None):
 
     dataset = fo.load_dataset(args.dataset_name)
 
-    view = dataset.exists(args.label_field)
+    view = dataset.exists(label_field)
     if len(view) == 0:
-        raise ValueError(f"数据集 {args.dataset_name} 中没有标注字段 {args.label_field}")
+        raise ValueError(f"数据集 {args.dataset_name} 中没有标注字段 {label_field}")
 
-    num_objects = view.count(f"{args.label_field}.detections")
-    if num_objects == 0:
+    kind = label_kind(view, label_field)
+    if is_seg_format(format_name) and kind != "polylines":
         raise ValueError(
-            f"数据集 {args.dataset_name} 的 {args.label_field} 字段中没有 detections 标注"
+            f"--format {format_name} 需要多边形（Polylines）标注字段，"
+            f"当前 {label_field} 字段类型是 {kind}。\n"
+            f"请用 00_import_anylabeling.py / 01_append_data.py 加 --refresh-labels "
+            f"生成 {DEFAULT_POLYGON_LABEL_FIELD} 字段，"
+            f"或用 --format yolo 导出检测框。"
         )
 
+    num_objects = view.count(f"{label_field}.{kind}")
+    if num_objects == 0:
+        raise ValueError(
+            f"数据集 {args.dataset_name} 的 {label_field} 字段中没有 {kind} 标注"
+        )
+
+    object_unit = "多边形" if kind == "polylines" else "标注框"
     print(
         "📋 导出配置:\n"
         f"  dataset_name : {args.dataset_name}\n"
-        f"  label_field  : {args.label_field}\n"
+        f"  label_field  : {label_field} ({kind})\n"
         f"  format       : {format_name}\n"
         f"  有效样本     : {len(view)}\n"
-        f"  标注框       : {num_objects}"
+        f"  {object_unit:<12} : {num_objects}"
     )
 
-    classes = resolve_classes(view, args.label_field, args.classes)
+    classes = resolve_classes(view, label_field, args.classes, kind)
+
+    # 分割导出前先剔除没有可用多边形的样本（ultralytics 会把 <3 点的行当检测行）
+    if is_seg_format(format_name):
+        view = check_polygons(view, label_field)
+        if len(view) == 0:
+            raise ValueError("剔除没有可用多边形的样本后，已经没有可导出的样本")
 
     # 提前拦截源图片缺失的情况（FiftyOne 导出时遇到缺失图片会整体中断）
     view, _ = check_media(view, skip_missing=args.skip_missing_media)
@@ -459,7 +700,7 @@ def main(argv=None):
             target_dir,
             format_name,
             dataset_type,
-            args.label_field,
+            label_field,
             classes,
             overwrite=overwrite,
             yolo_layout=yolo_layout,
@@ -469,12 +710,31 @@ def main(argv=None):
         entries.append((split, rel_images_dir, ratio_by_split[split]))
 
     yaml_name = yaml_filename(format_name)
+    yaml_hint_path = os.path.join(export_dir, yaml_name)
+    if is_seg_format(format_name):
+        extra_comments = [
+            "# 实例分割数据集：labels/<split>/*.txt 为 <class> <x1> <y1> ... <xn> <yn> 多边形",
+            f"# 训练：yolo segment train data={yaml_hint_path} "
+            "model=yolov8m-seg.pt epochs=100 imgsz=640",
+        ]
+    elif uses_yolo_layout(format_name):
+        extra_comments = [
+            "# 检测数据集：labels/<split>/*.txt 为 <class> <xc> <yc> <w> <h>",
+            f"# 训练：yolo detect train data={yaml_hint_path} "
+            "model=yolov8m.pt epochs=100 imgsz=640",
+        ]
+    else:
+        extra_comments = [
+            "# 纯 COCO 交换格式（train/labels.json、val/labels.json），不能直接用于 yolo 训练",
+        ]
+
     yaml_path = write_yaml_config(
         os.path.join(export_dir, yaml_name),
         args.dataset_name,
         format_name,
         entries,
         classes,
+        extra_comments=extra_comments,
     )
 
     if yolo_layout:
@@ -487,9 +747,37 @@ def main(argv=None):
         print(f"  ├── images/{', images/'.join(args.splits)}")
         print(f"  ├── labels/{', labels/'.join(args.splits)}")
         print(f"  └── {yaml_name}")
-        print("\n🚀 训练命令:")
-        print(f"  yolo detect train data={yaml_path} model=yolov8m.pt "
-              "epochs=100 imgsz=640 batch=16 device=0")
+
+        if is_seg_format(format_name):
+            ok, seg_stats = verify_and_fix_seg_labels(export_dir, args.splits, len(classes))
+            print("\n🔎 YOLO-seg 标签自检:")
+            for split, stat in seg_stats.items():
+                print(
+                    f"  {split}: {stat['images']} 张图 / {stat['labels']} 个标签文件 / "
+                    f"{stat['objects']} 个多边形"
+                )
+                if stat["clamped_rows"]:
+                    print(f"    ℹ️ 已把 {stat['clamped_rows']} 个越界坐标裁剪到 [0, 1]")
+                if stat["dropped_rows"]:
+                    print(f"    ⚠️ 已删除 {stat['dropped_rows']} 条不合法的分割行")
+                if stat["missing_labels"]:
+                    print(f"    ⚠️ {len(stat['missing_labels'])} 张图缺少标签文件")
+                if stat["extra_labels"]:
+                    print(f"    ⚠️ {len(stat['extra_labels'])} 个标签文件没有对应图片")
+
+            if not ok:
+                print("  ⚠️ 自检发现问题，请检查上面的明细", file=sys.stderr)
+            else:
+                print("  ✅ 图片/标签一一对应，且全部为合法的分割行")
+
+            print("\n🚀 训练命令:")
+            print(f"  yolo segment train data={yaml_path} model=yolov8m-seg.pt "
+                  "epochs=100 imgsz=640 batch=16 device=0")
+            print("  （首次运行会自动下载 yolov8m-seg.pt 权重）")
+        else:
+            print("\n🚀 训练命令:")
+            print(f"  yolo detect train data={yaml_path} model=yolov8m.pt "
+                  "epochs=100 imgsz=640 batch=16 device=0")
     else:
         labels_paths = ", ".join(
             os.path.join(split, COCO_LABELS_FILENAME) for split in args.splits

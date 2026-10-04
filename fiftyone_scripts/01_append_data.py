@@ -55,6 +55,11 @@ def build_parser():
         action="store_true",
         help="数据集已存在时先删除再全量重新导入（重建数据集，一般增量场景不建议开启）",
     )
+    parser.add_argument(
+        "--refresh-labels",
+        action="store_true",
+        help="忽略已有标注，重新解析所有样本 JSON 并覆盖写入（用于补齐多边形字段或同步标注修改）",
+    )
     return parser
 
 
@@ -88,7 +93,8 @@ def main(argv=None):
           f"  image_dir    : {args.image_dir}\n"
           f"  labels_dir   : {args.labels_dir}\n"
           f"  tags         : {tags}\n"
-          f"  overwrite    : {args.overwrite}\n")
+          f"  overwrite    : {args.overwrite}\n"
+          f"  refresh_labels: {args.refresh_labels}\n")
 
     import_images_with_anylabeling(
         dataset_name=args.dataset_name,
@@ -96,6 +102,7 @@ def main(argv=None):
         labels_dir=args.labels_dir,
         tags=tags,
         overwrite=args.overwrite,
+        refresh_labels=args.refresh_labels,
     )
     print("✅ 增量导入完成！")
 

@@ -21,7 +21,10 @@ def build_parser():
             "\n"
             "说明:\n"
             "  - 若未指定 --image-dir / --labels-dir，脚本会以交互方式询问；\n"
-            "  - 若未指定 --tags，默认使用 ['raw_import']。\n"
+            "  - 若未指定 --tags，默认使用 ['raw_import']；\n"
+            "  - rectangle 写入 ground_truth（Detections），polygon/rotation 额外写入\n"
+            "    ground_truth_polygons（Polylines）；\n"
+            "  - 给已导入的数据集补齐多边形字段时，加 --refresh-labels 重新解析全部 JSON。\n"
         ),
     )
     parser.add_argument(
@@ -53,6 +56,11 @@ def build_parser():
         "--overwrite",
         action="store_true",
         help="若数据集已存在则先删除再全量重新导入（用于清空脏数据）",
+    )
+    parser.add_argument(
+        "--refresh-labels",
+        action="store_true",
+        help="忽略已有标注，重新解析所有样本 JSON 并覆盖写入（用于补齐多边形字段或同步标注修改）",
     )
     return parser
 
@@ -87,7 +95,8 @@ def main(argv=None):
           f"  image_dir    : {args.image_dir}\n"
           f"  labels_dir   : {args.labels_dir}\n"
           f"  tags         : {tags}\n"
-          f"  overwrite    : {args.overwrite}\n")
+          f"  overwrite    : {args.overwrite}\n"
+          f"  refresh_labels: {args.refresh_labels}\n")
 
     import_images_with_anylabeling(
         dataset_name=args.dataset_name,
@@ -95,6 +104,7 @@ def main(argv=None):
         labels_dir=args.labels_dir,
         tags=tags,
         overwrite=args.overwrite,
+        refresh_labels=args.refresh_labels,
     )
 
 

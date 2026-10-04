@@ -9,7 +9,8 @@
   - 创建或加载数据集
   - 删除指定数据集
   - 解析 X-AnyLabeling JSON 标注
-  - 将标注转换成 `fo.Detection`
+  - `rectangle` 转换成 `fo.Detection`（写入 `ground_truth`），
+    `polygon` / `rotation` 额外转换成 `fo.Polyline`（写入 `ground_truth_polygons`）
   - 仅增量导入未存在的图片，避免重复导入
 
 - `00_import_anylabeling.py`  
@@ -27,9 +28,10 @@
 
 - `02_export_yolo.py`  
   导出入口，用于：
-  - 按 train/val 随机拆分导出 `yolo` / `coco-yaml`（ultralytics 可直接训练）
+  - 按 train/val 随机拆分导出 `yolo` / `coco-yaml`（ultralytics 可直接检测训练）
+  - 导出 `yolo-seg`（多边形，ultralytics 可直接实例分割训练，`yolo segment train`）
   - 导出纯 `coco` 格式（仅用于数据交换）
-  - 自动生成 `coco.yaml` / `dataset.yaml` 训练配置
+  - 自动生成 `coco.yaml` / `dataset.yaml` / `data.yaml` 训练配置
 
 ---
 
@@ -40,8 +42,10 @@
 1. 可手动创建和删除指定 dataset
 2. 可导入图片和 X-AnyLabeling 标注
 3. 每次执行时只新增未存在的数据，不重复导入
-4. 标注字段写入 `ground_truth`
+4. 标注字段写入 `ground_truth`（矩形框，`Detections`）；
+   多边形/旋转框轮廓写入 `ground_truth_polygons`（`Polylines`，归一化坐标、闭合填充）
 5. 支持与 FiftyOne 视图/YOLO 导出流程衔接
+6. 可用 `--refresh-labels` 重新解析全部 JSON 并覆盖标注（补齐/修正标注）
 
 ---
 
@@ -82,6 +86,7 @@ docker exec -it fo-dashboard /opt/.fiftyone-venv/bin/python /scripts/dataLoad.py
 | `--labels-dir` | X-AnyLabeling JSON 标注目录 |
 | `-t/--tags` | 附加标签，可多个，如 `--tags raw_import incremental` |
 | `--overwrite` | 数据集已存在时先删除再全量导入（清空脏数据） |
+| `--refresh-labels` | 忽略已有标注，重新解析所有样本 JSON 并覆盖写入（用于补齐 `ground_truth_polygons` 或同步标注修改） |
 
 带参数直接运行：
 
@@ -117,6 +122,22 @@ docker exec -it fo-dashboard /opt/.fiftyone-venv/bin/python /scripts/01_append_d
 ```bash
 docker exec -it fo-dashboard /opt/.fiftyone-venv/bin/python /scripts/01_append_data.py
 ```
+
+### 4.1 补齐 / 刷新多边形标注
+
+若数据集是早期版本（只有 `ground_truth` 矩形框）导入的，加 `--refresh-labels` 重新解析全部 JSON，
+即可回填 `ground_truth_polygons` 多边形字段（已存在的直角框会被重写为最新 JSON 内容）：
+
+```bash
+docker exec fo-dashboard /opt/.fiftyone-venv/bin/python /scripts/00_import_anylabeling.py \
+  --dataset-name Puddle \
+  --image-dir /media/images/Puddle \
+  --labels-dir /media/images/Puddle_xany \
+  --refresh-labels
+```
+
+导入纯多边形数据集（如 `Puddle`，`shape_type` 全为 `polygon`）后，可在 App 中用
+`ground_truth` 筛选矩形框视图、用 `ground_truth_polygons` 查看真实轮廓（`closed=True`、`filled=True`）。
 
 ### 5. 启动 FiftyOne 可视化界面
 
@@ -208,15 +229,17 @@ docker exec -it fo-dashboard \
 
 ### 8.1 格式对照
 
-| `--format` | 标注格式 | 能否直接 `yolo detect train` | 配置文件 |
+| `--format` | 标注格式 | 用途 | 配置文件 |
 | --- | --- | --- | --- |
-| `yolo` | YOLO `.txt` | ✅ 可以 | `dataset.yaml` |
-| `coco-yaml` | YOLO `.txt` | ✅ 可以 | `coco.yaml` |
-| `coco` | COCO `labels.json` | ❌ 不可以（仅用于数据交换） | `coco.yaml` |
+| `yolo` | YOLO `.txt`（框） | ✅ `yolo detect train` | `dataset.yaml` |
+| `coco-yaml` | YOLO `.txt`（框） | ✅ `yolo detect train` | `coco.yaml` |
+| `coco` | COCO `labels.json` | ❌ 仅用于数据交换 | `coco.yaml` |
+| `yolo-seg` | YOLO-seg `.txt`（多边形） | ✅ `yolo segment train` | `data.yaml` |
 
 > ultralytics 只读取与图片同级的 `labels/*.txt`，**不读** COCO 的 `labels.json`；
 > 它通过把图片路径里的 `images` 替换成 `labels` 来定位标注，所以图片必须在
-> `images/<split>`、标注必须在 `labels/<split>`。需要训练时请用 `yolo` 或 `coco-yaml`。
+> `images/<split>`、标注必须在 `labels/<split>`。需要训练时请用 `yolo`、
+> `coco-yaml`（检测）或 `yolo-seg`（实例分割）。
 
 ### 8.2 导出
 
@@ -256,11 +279,44 @@ yolo detect train \
 `coco.yaml` 中**不写** `path` 键，ultralytics 会以该 YAML 所在目录为基准解析
 `train`/`val`，因此整份导出目录可以直接拷贝或移动到其它机器上使用。
 
-### 8.4 常用参数
+### 8.4 实例分割导出（yolo-seg）
+
+`--format yolo-seg` 从多边形字段 `ground_truth_polygons`（`Polylines`）导出 YOLO-seg 标签，
+每行是 `<class> <x1> <y1> <x2> <y2> ... <xn> <yn>`（归一化多边形顶点）：
+
+```bash
+docker exec fo-dashboard \
+  /opt/.fiftyone-venv/bin/python \
+  /scripts/02_export_yolo.py \
+  --dataset-name puddle_dataset \
+  --format yolo-seg \
+  --overwrite
+```
+
+导出到 `exports/coco_yaml/...` 之外的默认目录是 `/exports/yolo_seg/<dataset_name>`，
+结构为 `images/{train,val}` + `labels/{train,val}` + `data.yaml`。
+
+```bash
+yolo segment train \
+  data=./exports/yolo_seg/puddle_dataset/data.yaml \
+  model=yolov8m-seg.pt \
+  epochs=100 imgsz=640 batch=16 device=0
+```
+
+注意事项（脚本已做前置检查，这里说明原理）：
+
+- 数据集中必须有多边形标注。若只有 `ground_truth`（矩形框），脚本会直接报错并提示：
+  用 `00_import_anylabeling.py --refresh-labels` 生成 `ground_truth_polygons` 后再导出。
+- ultralytics 把「一行 tokens 数 > 6」的行判定为分割行，因此顶点数 < 3 的多边形会被剔除，
+  没有任何可用多边形的样本不会进入导出（脚本会打印剔除数量）。
+- 导出后脚本会自检每个 split 的图片/标签是否一一对应、每行是否合法，并把越界坐标
+  裁剪到 `[0, 1]`（ultralytics 校验时坐标超出 `[-0.01, 1.01]` 会中止整个数据集）。
+
+### 8.5 常用参数
 
 | 参数 | 说明 |
 | --- | --- |
-| `--label-field` | 标注字段（默认 `ground_truth`） |
+| `--label-field` | 标注字段（`yolo`/`coco`/`coco-yaml` 默认 `ground_truth`，`yolo-seg` 默认 `ground_truth_polygons`） |
 | `--classes` | 类别列表；不传则自动从数据集推断 |
 | `--train-ratio` / `--val-ratio` | 拆分比例（默认 0.8 / 0.2） |
 | `--seed` | 随机划分种子（默认 42） |
