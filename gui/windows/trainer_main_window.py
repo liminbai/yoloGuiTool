@@ -28,6 +28,7 @@ from PySide6.QtGui import QFont, QPalette, QColor, QIcon, QAction, QPixmap, QIma
 from gui.threads.yolo_training_thread import YOLOTrainingThread
 from gui.threads.yolo_inference_threads import YOLOInferenceThread, SAM3InferenceThread
 from gui.widgets.class_editor_dialog import ClassEditorDialog
+from gui.utils.class_file_loader import CLASS_FILE_FILTER, default_dir, load_classes
 
 
 class YOLOConfigWidget(QWidget):
@@ -513,72 +514,31 @@ class YOLOConfigWidget(QWidget):
             self.emit_config_changed()
     
     def load_classes_from_file(self):
-        """从文件加载类别"""
+        """从文件加载类别
+
+        支持 coco.yaml（Ultralytics/YOLO 数据配置，names 为列表或索引字典）、
+        COCO 标注 json（categories）、纯列表 json/yaml 以及每行一个类别的 txt。
+        """
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择类别文件", "", 
-            "文本文件 (*.txt);;JSON文件 (*.json);;YAML文件 (*.yaml *.yml);;所有文件 (*)"
+            self, "选择类别文件", default_dir(), CLASS_FILE_FILTER
         )
-        
-        if file_path:
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                    
-                classes = []
-                
-                if file_path.endswith('.json'):
-                    data = json.loads(content)
-                    if isinstance(data, list):
-                        classes = [str(item) for item in data]
-                    elif isinstance(data, dict):
-                        if 'names' in data:
-                            names_data = data['names']
-                            if isinstance(names_data, dict):
-                                classes = [names_data[str(i)] for i in sorted(map(int, names_data.keys()))]
-                            elif isinstance(names_data, list):
-                                classes = [str(item) for item in names_data]
-                        else:
-                            try:
-                                sorted_items = sorted(data.items(), key=lambda x: int(x[0]) if x[0].isdigit() else x[0])
-                                classes = [str(value) for key, value in sorted_items]
-                            except:
-                                classes = list(data.values())
-                elif file_path.endswith('.yaml') or file_path.endswith('.yml'):
-                    data = yaml.safe_load(content)
-                    if isinstance(data, list):
-                        classes = [str(item) for item in data]
-                    elif isinstance(data, dict):
-                        if 'names' in data:
-                            names_data = data['names']
-                            if isinstance(names_data, dict):
-                                classes = [names_data[str(i)] for i in sorted(map(int, names_data.keys()))]
-                            elif isinstance(names_data, list):
-                                classes = [str(item) for item in names_data]
-                        else:
-                            try:
-                                sorted_items = sorted(data.items(), key=lambda x: int(x[0]) if isinstance(x[0], (int, str)) and str(x[0]).isdigit() else x[0])
-                                classes = [str(value) for key, value in sorted_items]
-                            except:
-                                classes = list(data.values())
-                else:
-                    lines = content.split('\n')
-                    for line in lines:
-                        line = line.strip()
-                        if line:
-                            if ': ' in line:
-                                parts = line.split(': ', 1)
-                                if len(parts) == 2 and parts[0].strip().isdigit():
-                                    classes.append(parts[1].strip())
-                                else:
-                                    classes.append(line)
-                            else:
-                                classes.append(line)
-                
-                self.set_classes(classes)
-                self.emit_config_changed()
-                
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"加载文件失败:\n{str(e)}")
+
+        if not file_path:
+            return
+
+        try:
+            classes, warnings = load_classes(file_path)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"加载文件失败:\n{str(e)}")
+            return
+
+        self.set_classes(classes)
+        self.emit_config_changed()
+
+        if warnings:
+            QMessageBox.warning(
+                self, "提示", f"已加载 {len(classes)} 个类别。\n\n" + "\n".join(warnings)
+            )
     
     def clear_classes(self):
         """清除类别"""
