@@ -1,43 +1,21 @@
 #!/usr/bin/env python
-"""将 FiftyOne 数据集按 train/val 随机拆分导出为 YOLO / COCO 格式，并生成 YAML 配置。
+"""将 FiftyOne 数据集按 train/val 随机拆分导出为 YOLO 格式，并生成 YAML 配置。
 
-`yolo` 与 `coco-yaml` 都会导出成 **ultralytics 可直接训练** 的布局（txt 标注）::
+只支持两种导出格式，都会生成 **ultralytics 可直接训练** 的布局（txt 标注）::
 
+    # --format yolo（目标检测，默认）
     <export_dir>/
         images/train/*.jpg
         images/val/*.jpg
-        labels/train/*.txt
+        labels/train/*.txt      # <class> <xc> <yc> <w> <h>
         labels/val/*.txt
-        dataset.yaml            # yolo 格式的配置文件
-        coco.yaml               # coco-yaml 格式的配置文件（内容同样是 YOLO 训练配置）
+        dataset.yaml
 
     训练命令::
 
-        yolo detect train data=<export_dir>/coco.yaml model=yolov8m.pt epochs=100 imgsz=640
+        yolo detect train data=<export_dir>/dataset.yaml model=yolov8m.pt epochs=100 imgsz=640
 
-为什么必须用这个布局（ultralytics 8.4 实测结论）：
-
-1. ultralytics 只读取与图片同级的 ``labels/*.txt``，不读 COCO 的 ``labels.json``；
-2. 它通过把图片路径中的 ``images`` 替换成 ``labels`` 来推导标注路径，
-   所以图片必须放在 ``images/<split>``、标注必须放在 ``labels/<split>``；
-3. 配置文件里不要写 ``path`` 键，ultralytics 会以 YAML 所在目录为基准解析
-   ``train``/``val``，这样导出目录整体移动、或在容器/宿主机之间切换都不会失效。
-
-`coco` 是纯 COCO 导出（json 标注），仅用于与其它框架交换数据，**不能**直接用于
-``yolo detect train``::
-
-    <export_dir>/
-        train/
-            data/*.jpg          # FiftyOne 默认把图片写入 data/
-            labels.json         # COCO 标注文件
-        val/
-            data/*.jpg
-            labels.json
-        coco.yaml
-
-`yolo-seg` 用于 **YOLOv8/YOLO11 实例分割（segment）训练**，默认从
-``ground_truth_polygons``（Polylines）字段导出多边形，标签为 YOLO-seg 格式::
-
+    # --format yolo-seg（实例分割，从 ground_truth_polygons 字段导出多边形）
     <export_dir>/
         images/train/*.jpg
         images/val/*.jpg
@@ -48,6 +26,14 @@
     训练命令::
 
         yolo segment train data=<export_dir>/data.yaml model=yolov8m-seg.pt epochs=100 imgsz=640
+
+为什么必须用这个布局（ultralytics 8.4 实测结论）：
+
+1. ultralytics 只读取与图片同级的 ``labels/*.txt``（不读 COCO 的 ``labels.json``）；
+2. 它通过把图片路径中的 ``images`` 替换成 ``labels`` 来推导标注路径，
+   所以图片必须放在 ``images/<split>``、标注必须放在 ``labels/<split>``；
+3. 配置文件里不要写 ``path`` 键，ultralytics 会以 YAML 所在目录为基准解析
+   ``train``/``val``，这样导出目录整体移动、或在容器/宿主机之间切换都不会失效。
 
 ultralytics 8.4 对分割标签的三条硬约束（已在本脚本里做前置检查/兜底）：
 
@@ -71,7 +57,7 @@ DEFAULT_LABEL_FIELD = "ground_truth"
 # YOLO-seg 默认使用的多边形字段（由 anylabeling_import.py 写入）
 DEFAULT_POLYGON_LABEL_FIELD = "ground_truth_polygons"
 # None 表示"自动从数据集中推断类别"。
-# 注意：COCO 导出器会静默丢弃不在 classes 列表中的标签，
+# 注意：导出器会丢弃不在 classes 列表中的标签（只告警不报错），
 # 所以除非确实要裁剪类别，否则不要硬编码类别列表。
 DEFAULT_CLASSES = None
 DEFAULT_FORMAT = "yolo"
@@ -80,17 +66,14 @@ DEFAULT_TRAIN_RATIO = 0.8
 DEFAULT_VAL_RATIO = 0.2
 DEFAULT_SPLITS = ["train", "val"]
 
-# 需要多边形标注的导出格式（实例分割）
-SEG_FORMATS = frozenset({"yolo-seg"})
+# 支持的导出格式：检测 / 实例分割
+FORMAT_DETECT = "yolo"
+FORMAT_SEG = "yolo-seg"
+FORMAT_CHOICES = (FORMAT_DETECT, FORMAT_SEG)
 
-# COCO 标注文件名（FiftyOne 默认写在 export_dir 根目录下）
-COCO_LABELS_FILENAME = "labels.json"
-# 各格式图片所在子目录名，与 FiftyOne 各导出器的默认布局保持一致
+# 各格式图片/标签子目录名，与 FiftyOne YOLOv5 导出器的默认布局一致
 YOLO_IMAGES_DIRNAME = "images"
 YOLO_LABELS_DIRNAME = "labels"
-COCO_IMAGES_DIRNAME = "data"
-# 使用 images/<split> + labels/<split> 布局（ultralytics 可直接训练）的格式
-YOLO_LAYOUT_FORMATS = {"yolo", "coco-yaml", "yolo-seg"}
 # ultralytics 强制要求 train/val 同时存在，否则 check_det_dataset 直接报 SyntaxError
 ULTRALYTICS_REQUIRED_SPLITS = ("train", "val")
 # ultralytics 判定"分割行"的最小 tokens 数：class + 3 个 (x, y) 点 = 7
@@ -99,34 +82,30 @@ SEG_MIN_ROW_TOKENS = 7
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="将 FiftyOne 数据集按 train/val 随机拆分导出为 YOLO 或 COCO/COCO-YAML 格式。",
+        description="将 FiftyOne 数据集按 train/val 随机拆分导出为 YOLO（检测 / 实例分割）格式。",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "示例：\n"
-            "  python 02_export_yolo.py --dataset-name ppe_dataset --format coco-yaml\n"
-            "  python 02_export_yolo.py --dataset-name ppe_dataset --format coco-yaml --overwrite\n"
-            "  python 02_export_yolo.py --dataset-name ppe_dataset --format coco-yaml "
+            "  # 目标检测（ground_truth 矩形框）\n"
+            "  python 02_export_yolo.py --dataset-name ppe_dataset --format yolo --overwrite\n"
+            "  python 02_export_yolo.py --dataset-name ppe_dataset --format yolo "
             "--classes helmet vest person\n"
+            "  # 实例分割（ground_truth_polygons 多边形）\n"
             "  python 02_export_yolo.py --dataset-name puddle_dataset --format yolo-seg "
             "--overwrite\n"
             "\n"
-            "yolo / coco-yaml / yolo-seg 导出目录结构（ultralytics 可直接训练）：\n"
+            "导出目录结构（ultralytics 可直接训练）：\n"
             "  <export-dir>/images/train/*.jpg + images/val/*.jpg\n"
             "  <export-dir>/labels/train/*.txt + labels/val/*.txt\n"
-            "  <export-dir>/coco.yaml    （或 dataset.yaml）\n"
-            "  <export-dir>/data.yaml    （yolo-seg）\n"
+            "  <export-dir>/dataset.yaml    （--format yolo）\n"
+            "  <export-dir>/data.yaml       （--format yolo-seg）\n"
             "\n"
-            "  yolo detect train data=<export-dir>/coco.yaml model=yolov8m.pt epochs=100 imgsz=640\n"
+            "  yolo detect train data=<export-dir>/dataset.yaml model=yolov8m.pt epochs=100 imgsz=640\n"
             "  yolo segment train data=<export-dir>/data.yaml model=yolov8m-seg.pt epochs=100 imgsz=640\n"
-            "\n"
-            "coco 导出目录结构（仅供数据交换，不能直接训练）：\n"
-            "  <export-dir>/train/data/*.jpg + labels.json\n"
-            "  <export-dir>/val/data/*.jpg   + labels.json\n"
-            "  <export-dir>/coco.yaml\n"
             "\n"
             "说明：\n"
             "  - 不传 --classes 时自动从数据集推断类别；\n"
-            "  - COCO 导出器会丢弃不在 classes 中的标签，手写 --classes 时务必与数据一致；\n"
+            "  - 手写 --classes 时，不在列表中的标签会被导出器丢弃（只告警），务必与数据一致；\n"
             "  - yolo-seg 需要多边形标注：默认字段为 "
             f"{DEFAULT_POLYGON_LABEL_FIELD}（Polylines）；\n"
             "    该字段由 00_import_anylabeling.py / 01_append_data.py 导入 polygon 标注时写入。\n"
@@ -136,13 +115,12 @@ def build_parser():
     parser.add_argument("--dataset-name", type=str, default=DEFAULT_DATASET_NAME,
                         help=f"FiftyOne 数据集名称（默认：{DEFAULT_DATASET_NAME}）")
     parser.add_argument("--label-field", type=str, default=None,
-                        help="数据集标注字段；不传时 yolo/coco/coco-yaml 默认 "
-                             f"{DEFAULT_LABEL_FIELD}，yolo-seg 默认 {DEFAULT_POLYGON_LABEL_FIELD}")
+                        help=f"数据集标注字段；不传时 {FORMAT_DETECT} 默认 {DEFAULT_LABEL_FIELD}，"
+                             f"{FORMAT_SEG} 默认 {DEFAULT_POLYGON_LABEL_FIELD}")
     parser.add_argument("--format", type=str, default=DEFAULT_FORMAT,
-                        choices=["yolo", "coco", "coco-yaml", "yolo-seg"],
-                        help="导出的数据集格式：yolo / coco / coco-yaml / yolo-seg"
-                             "（yolo、coco-yaml 用于检测训练，yolo-seg 用于实例分割训练，"
-                             "默认：yolo）")
+                        choices=list(FORMAT_CHOICES),
+                        help=f"导出格式：{FORMAT_DETECT}（检测）/ {FORMAT_SEG}（实例分割）"
+                             f"（默认：{DEFAULT_FORMAT}）")
     parser.add_argument("--export-dir", type=str, default=None,
                         help=f"导出目录；若不传则自动构建为 {DEFAULT_EXPORT_DIR}/"
                              "<format>/<dataset-name>")
@@ -151,7 +129,7 @@ def build_parser():
     parser.add_argument("--splits", "--split", dest="splits", type=str, nargs="*",
                         default=list(DEFAULT_SPLITS),
                         help=f"拆分名称列表（默认：{' '.join(DEFAULT_SPLITS)}）；"
-                             "yolo/coco-yaml 必须同时包含 train 和 val")
+                             "必须同时包含 train 和 val")
     parser.add_argument("--ratios", type=float, nargs="*", default=None,
                         help="各拆分比例，顺序与 --splits 一致；不传则使用 --train-ratio/--val-ratio")
     parser.add_argument("--train-ratio", type=float, default=DEFAULT_TRAIN_RATIO,
@@ -171,24 +149,18 @@ def build_parser():
 
 
 def resolve_format(format_name):
-    """返回该格式对应的 FiftyOne 数据集类型。
+    """校验格式名并返回对应的 FiftyOne 数据集类型。
 
-    coco-yaml 也走 YOLOv5Dataset：ultralytics 只能训练 txt 标注，
-    纯 COCO 的 labels.json 无法直接训练，因此这里不做 COCO 导出。
+    检测与分割都走 YOLOv5Dataset：FiftyOne 的 YOLOAnnotationWriter 对
+    ``fol.Detections`` 写 ``class xc yc w h``，对 ``fol.Polylines`` 写
+    ``class x1 y1 x2 y2 ...``（即 YOLO-seg 多边形行），布局完全一致。
     """
-    format_map = {
-        "yolo": fo.types.YOLOv5Dataset,
-        "coco": fo.types.COCODetectionDataset,
-        "coco-yaml": fo.types.YOLOv5Dataset,
-        # 实例分割同样走 YOLOv5Dataset：FiftyOne 的 YOLOAnnotationWriter 对
-        # fol.Polylines 会写出 "class x1 y1 x2 y2 ..." 的 YOLO-seg 多边形行
-        "yolo-seg": fo.types.YOLOv5Dataset,
-    }
+    if format_name not in FORMAT_CHOICES:
+        raise ValueError(
+            f"Unsupported format: {format_name}（可选：{' / '.join(FORMAT_CHOICES)}）"
+        )
 
-    if format_name not in format_map:
-        raise ValueError(f"Unsupported format: {format_name}")
-
-    return format_map[format_name]
+    return fo.types.YOLOv5Dataset
 
 
 def resolve_ratios(args):
@@ -213,14 +185,9 @@ def resolve_ratios(args):
     return [r / total for r in ratios]
 
 
-def uses_yolo_layout(format_name):
-    """该格式是否导出为 images/<split> + labels/<split> 的 ultralytics 训练布局。"""
-    return format_name in YOLO_LAYOUT_FORMATS
-
-
 def is_seg_format(format_name):
     """该格式是否要求多边形（Polylines）标注。"""
-    return format_name in SEG_FORMATS
+    return format_name == FORMAT_SEG
 
 
 def default_label_field(format_name):
@@ -230,11 +197,7 @@ def default_label_field(format_name):
 
 def yaml_filename(format_name):
     """返回该格式的配置文件名称（ultralytics 不关心文件名，只关心内容）。"""
-    if format_name == "yolo":
-        return "dataset.yaml"
-    if is_seg_format(format_name):
-        return "data.yaml"
-    return "coco.yaml"
+    return "data.yaml" if is_seg_format(format_name) else "dataset.yaml"
 
 
 def label_kind(view, label_field):
@@ -250,24 +213,18 @@ def label_kind(view, label_field):
     return "detections"
 
 
-def validate_splits(format_name, splits):
+def validate_splits(splits):
     """ultralytics 要求 train 与 val 同时存在，提前拦截而不是等到训练时才报错。"""
-    if not uses_yolo_layout(format_name):
-        return
-
     missing = [s for s in ULTRALYTICS_REQUIRED_SPLITS if s not in splits]
     if missing:
         raise ValueError(
-            f"{format_name} 导出用于 ultralytics 训练，--splits 必须同时包含 "
-            f"{list(ULTRALYTICS_REQUIRED_SPLITS)}，当前缺少: {missing}"
+            f"--splits 必须同时包含 {list(ULTRALYTICS_REQUIRED_SPLITS)}，当前缺少: {missing}"
         )
 
 
 def default_export_dir(format_name, dataset_name):
     # 目录名统一用下划线，避免 '-' 在 shell/路径里带来歧义
-    fmt_alias = {"coco-yaml": "coco_yaml", "yolo-seg": "yolo_seg"}.get(
-        format_name, format_name
-    )
+    fmt_alias = "yolo_seg" if is_seg_format(format_name) else "yolo"
     return os.path.join(DEFAULT_EXPORT_DIR, fmt_alias, dataset_name)
 
 
@@ -292,8 +249,8 @@ def clear_dir(path, overwrite):
 def resolve_classes(view, label_field, classes, kind):
     """确定最终使用的类别列表。
 
-    COCO 导出器对不在 classes 中的标签只告警并跳过，
-    这里显式提示，避免出现"图片导出了、labels.json 里却没有标注"的情况。
+    YOLO 导出器对不在 classes 中的标签只告警并跳过，
+    这里显式提示，避免出现"图片导出了、labels 里却没有标注"的情况。
     """
     observed = sorted(view.distinct(f"{label_field}.{kind}.label"))
 
@@ -512,32 +469,23 @@ def split_view(view, splits, ratios, seed):
     return dict(zip(splits, views))
 
 
-def export_split(view, split, target_dir, format_name, dataset_type, label_field, classes,
-                 overwrite=False, yolo_layout=None):
-    """把单个拆分导出到 target_dir。"""
-    if yolo_layout is None:
-        yolo_layout = uses_yolo_layout(format_name)
-
+def export_split(view, split, export_dir, dataset_type, label_field, classes):
+    """把单个拆分导出到 export_dir（各 split 共用同一目录，由导出器按 split 建子目录）。"""
     kwargs = dict(
-        export_dir=target_dir,
+        export_dir=export_dir,
         dataset_type=dataset_type,
         label_field=label_field,
+        # YOLOv5DatasetExporter 必须显式指定 split
+        split=split,
     )
 
     if classes:
         kwargs["classes"] = classes
 
-    if yolo_layout:
-        # YOLOv5DatasetExporter 必须显式指定 split；COCO 导出器没有该参数（传了也只会被忽略）
-        kwargs["split"] = split
-        # YOLO 的多个 split 共用同一个 export_dir，overwrite 交给 prepare_dir 统一处理，
-        # 否则导出第二个 split 时会把第一个 split 的成果删掉
-    else:
-        # COCO 每个 split 一个独立目录，交给 FiftyOne 原生 overwrite 逻辑清理
-        kwargs["overwrite"] = overwrite
-
+    # 多个 split 共用同一个 export_dir，overwrite 交给 clear_dir 统一处理，
+    # 否则导出第二个 split 时会把第一个 split 的成果删掉。
     view.export(**kwargs)
-    return target_dir
+    return export_dir
 
 
 def write_yaml_config(yaml_path, dataset_name, format_name, entries, classes, extra_comments=None):
@@ -586,7 +534,7 @@ def remove_stale_exporter_yaml(export_dir, keep_name):
 
     YOLOv5DatasetExporter 每导出一个 split 都会在 export_dir 根目录写一份
     dataset.yaml，后写的会覆盖先写的（只剩最后一个 split），内容也不含正确的
-    train/val 结构。对 coco-yaml 来说它是一个会误导人的残留文件，直接清掉。
+    train/val 结构。yolo-seg 用的是 data.yaml，这份残留必须清掉。
     """
     stale = os.path.join(export_dir, "dataset.yaml")
     if keep_name == "dataset.yaml" or not os.path.isfile(stale):
@@ -668,8 +616,7 @@ def main(argv=None):
         args.export_dir or default_export_dir(format_name, args.dataset_name)
     )
 
-    yolo_layout = uses_yolo_layout(format_name)
-    validate_splits(format_name, args.splits)
+    validate_splits(args.splits)
 
     # 随机拆分（返回视图，不修改数据集标签）
     split_views = split_view(view, args.splits, ratios, args.seed)
@@ -677,35 +624,23 @@ def main(argv=None):
     for split in args.splits:
         print(f"  {split}: {len(split_views[split])} 张")
 
-    # yolo/coco-yaml 由导出器自行按 split 建子目录，两次导出都写到 export_dir 根目录，
-    # 所以这里统一清理一次根目录；COCO 则每个 split 各自独立目录，
-    # 由 FiftyOne 原生的 overwrite 逻辑负责清理。
-    if yolo_layout:
-        clear_dir(export_dir, args.overwrite)
+    # 各 split 都由导出器按 split 建子目录、写到 export_dir 根目录，
+    # 所以这里统一清理一次根目录（只删除不预建，避免 FiftyOne 误报 merge）。
+    clear_dir(export_dir, args.overwrite)
 
     entries = []
     for split in args.splits:
-        if yolo_layout:
-            target_dir = export_dir
-            rel_images_dir = os.path.join(YOLO_IMAGES_DIRNAME, split)
-            overwrite = False
-        else:
-            target_dir = os.path.join(export_dir, split)
-            rel_images_dir = os.path.join(split, COCO_IMAGES_DIRNAME)
-            overwrite = args.overwrite
+        rel_images_dir = os.path.join(YOLO_IMAGES_DIRNAME, split)
 
         export_split(
             split_views[split],
             split,
-            target_dir,
-            format_name,
+            export_dir,
             dataset_type,
             label_field,
             classes,
-            overwrite=overwrite,
-            yolo_layout=yolo_layout,
         )
-        print(f"✅ {split} 导出完成: {target_dir}")
+        print(f"✅ {split} 导出完成: {export_dir}")
 
         entries.append((split, rel_images_dir, ratio_by_split[split]))
 
@@ -717,15 +652,11 @@ def main(argv=None):
             f"# 训练：yolo segment train data={yaml_hint_path} "
             "model=yolov8m-seg.pt epochs=100 imgsz=640",
         ]
-    elif uses_yolo_layout(format_name):
-        extra_comments = [
-            "# 检测数据集：labels/<split>/*.txt 为 <class> <xc> <yc> <w> <h>",
-            f"# 训练：yolo detect train data={yaml_hint_path} "
-            "model=yolov8m.pt epochs=100 imgsz=640",
-        ]
     else:
         extra_comments = [
-            "# 纯 COCO 交换格式（train/labels.json、val/labels.json），不能直接用于 yolo 训练",
+            "# 目标检测数据集：labels/<split>/*.txt 为 <class> <xc> <yc> <w> <h>",
+            f"# 训练：yolo detect train data={yaml_hint_path} "
+            "model=yolov8m.pt epochs=100 imgsz=640",
         ]
 
     yaml_path = write_yaml_config(
@@ -737,54 +668,46 @@ def main(argv=None):
         extra_comments=extra_comments,
     )
 
-    if yolo_layout:
-        stale = remove_stale_exporter_yaml(export_dir, yaml_name)
-        if stale:
-            print(f"ℹ️ 已移除导出器生成的残留配置: {stale}")
+    stale = remove_stale_exporter_yaml(export_dir, yaml_name)
+    if stale:
+        print(f"ℹ️ 已移除导出器生成的残留配置: {stale}")
 
-        print("\n📂 导出的训练目录结构:")
-        print(f"  {export_dir}")
-        print(f"  ├── images/{', images/'.join(args.splits)}")
-        print(f"  ├── labels/{', labels/'.join(args.splits)}")
-        print(f"  └── {yaml_name}")
+    print("\n📂 导出的训练目录结构:")
+    print(f"  {export_dir}")
+    print(f"  ├── images/{', images/'.join(args.splits)}")
+    print(f"  ├── labels/{', labels/'.join(args.splits)}")
+    print(f"  └── {yaml_name}")
 
-        if is_seg_format(format_name):
-            ok, seg_stats = verify_and_fix_seg_labels(export_dir, args.splits, len(classes))
-            print("\n🔎 YOLO-seg 标签自检:")
-            for split, stat in seg_stats.items():
-                print(
-                    f"  {split}: {stat['images']} 张图 / {stat['labels']} 个标签文件 / "
-                    f"{stat['objects']} 个多边形"
-                )
-                if stat["clamped_rows"]:
-                    print(f"    ℹ️ 已把 {stat['clamped_rows']} 个越界坐标裁剪到 [0, 1]")
-                if stat["dropped_rows"]:
-                    print(f"    ⚠️ 已删除 {stat['dropped_rows']} 条不合法的分割行")
-                if stat["missing_labels"]:
-                    print(f"    ⚠️ {len(stat['missing_labels'])} 张图缺少标签文件")
-                if stat["extra_labels"]:
-                    print(f"    ⚠️ {len(stat['extra_labels'])} 个标签文件没有对应图片")
+    if is_seg_format(format_name):
+        ok, seg_stats = verify_and_fix_seg_labels(export_dir, args.splits, len(classes))
+        print("\n🔎 YOLO-seg 标签自检:")
+        for split, stat in seg_stats.items():
+            print(
+                f"  {split}: {stat['images']} 张图 / {stat['labels']} 个标签文件 / "
+                f"{stat['objects']} 个多边形"
+            )
+            if stat["clamped_rows"]:
+                print(f"    ℹ️ 已把 {stat['clamped_rows']} 个越界坐标裁剪到 [0, 1]")
+            if stat["dropped_rows"]:
+                print(f"    ⚠️ 已删除 {stat['dropped_rows']} 条不合法的分割行")
+            if stat["missing_labels"]:
+                print(f"    ⚠️ {len(stat['missing_labels'])} 张图缺少标签文件")
+            if stat["extra_labels"]:
+                print(f"    ⚠️ {len(stat['extra_labels'])} 个标签文件没有对应图片")
 
-            if not ok:
-                print("  ⚠️ 自检发现问题，请检查上面的明细", file=sys.stderr)
-            else:
-                print("  ✅ 图片/标签一一对应，且全部为合法的分割行")
-
-            print("\n🚀 训练命令:")
-            print(f"  yolo segment train data={yaml_path} model=yolov8m-seg.pt "
-                  "epochs=100 imgsz=640 batch=16 device=0")
-            print("  （首次运行会自动下载 yolov8m-seg.pt 权重）")
+        if not ok:
+            print("  ⚠️ 自检发现问题，请检查上面的明细", file=sys.stderr)
         else:
-            print("\n🚀 训练命令:")
-            print(f"  yolo detect train data={yaml_path} model=yolov8m.pt "
-                  "epochs=100 imgsz=640 batch=16 device=0")
+            print("  ✅ 图片/标签一一对应，且全部为合法的分割行")
+
+        print("\n🚀 训练命令:")
+        print(f"  yolo segment train data={yaml_path} model=yolov8m-seg.pt "
+              "epochs=100 imgsz=640 batch=16 device=0")
+        print("  （首次运行会自动下载 yolov8m-seg.pt 权重）")
     else:
-        labels_paths = ", ".join(
-            os.path.join(split, COCO_LABELS_FILENAME) for split in args.splits
-        )
-        print(f"ℹ️ COCO 标注文件: {labels_paths}")
-        print("ℹ️ coco 为纯 COCO 格式，无法直接用于 yolo detect train；"
-              "需要训练请改用 --format coco-yaml")
+        print("\n🚀 训练命令:")
+        print(f"  yolo detect train data={yaml_path} model=yolov8m.pt "
+              "epochs=100 imgsz=640 batch=16 device=0")
 
 
 if __name__ == "__main__":

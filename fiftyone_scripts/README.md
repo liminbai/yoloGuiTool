@@ -28,10 +28,9 @@
 
 - `02_export_yolo.py`  
   导出入口，用于：
-  - 按 train/val 随机拆分导出 `yolo` / `coco-yaml`（ultralytics 可直接检测训练）
-  - 导出 `yolo-seg`（多边形，ultralytics 可直接实例分割训练，`yolo segment train`）
-  - 导出纯 `coco` 格式（仅用于数据交换）
-  - 自动生成 `coco.yaml` / `dataset.yaml` / `data.yaml` 训练配置
+  - 按 train/val 随机拆分导出 `yolo`（检测，ultralytics 可直接 `yolo detect train`）
+  - 导出 `yolo-seg`（多边形，ultralytics 可直接 `yolo segment train`）
+  - 自动生成 `dataset.yaml` / `data.yaml` 训练配置
 
 ---
 
@@ -223,46 +222,43 @@ docker exec -it fo-dashboard \
 
 ---
 
-## 8. 导出可直接训练的 YOLO / COCO 数据集
+## 8. 导出可直接训练的 YOLO 数据集（检测 / 实例分割）
 
 `02_export_yolo.py` 负责把 FiftyOne 数据集按 train/val 拆分导出，并生成配置文件。
 
 ### 8.1 格式对照
 
-| `--format` | 标注格式 | 用途 | 配置文件 |
-| --- | --- | --- | --- |
-| `yolo` | YOLO `.txt`（框） | ✅ `yolo detect train` | `dataset.yaml` |
-| `coco-yaml` | YOLO `.txt`（框） | ✅ `yolo detect train` | `coco.yaml` |
-| `coco` | COCO `labels.json` | ❌ 仅用于数据交换 | `coco.yaml` |
-| `yolo-seg` | YOLO-seg `.txt`（多边形） | ✅ `yolo segment train` | `data.yaml` |
+| `--format` | 标注格式 | 用途 | 配置文件 | 默认标注字段 |
+| --- | --- | --- | --- | --- |
+| `yolo`（默认） | YOLO `.txt`（框 `<class> <xc> <yc> <w> <h>`） | ✅ `yolo detect train` | `dataset.yaml` | `ground_truth` |
+| `yolo-seg` | YOLO-seg `.txt`（多边形 `<class> <x1> <y1> ... <xn> <yn>`） | ✅ `yolo segment train` | `data.yaml` | `ground_truth_polygons` |
 
-> ultralytics 只读取与图片同级的 `labels/*.txt`，**不读** COCO 的 `labels.json`；
-> 它通过把图片路径里的 `images` 替换成 `labels` 来定位标注，所以图片必须在
-> `images/<split>`、标注必须在 `labels/<split>`。需要训练时请用 `yolo`、
-> `coco-yaml`（检测）或 `yolo-seg`（实例分割）。
+> ultralytics 只读取与图片同级的 `labels/*.txt`；它通过把图片路径里的 `images`
+> 替换成 `labels` 来定位标注，所以图片必须在 `images/<split>`、标注必须在
+> `labels/<split>`。
 
 ### 8.2 导出
 
 ```bash
-docker exec -it fo-dashboard \
+docker exec fo-dashboard \
   /opt/.fiftyone-venv/bin/python \
   /scripts/02_export_yolo.py \
   --dataset-name fire_dataset \
-  --format coco-yaml \
+  --format yolo \
   --overwrite
 ```
 
 导出结构：
 
 ```text
-/exports/coco_yaml/fire_dataset/
+/exports/yolo/fire_dataset/
 ├── images/
 │   ├── train/
 │   └── val/
 ├── labels/
 │   ├── train/
 │   └── val/
-└── coco.yaml
+└── dataset.yaml
 ```
 
 ### 8.3 开始训练
@@ -271,12 +267,12 @@ docker exec -it fo-dashboard \
 
 ```bash
 yolo detect train \
-  data=./exports/coco_yaml/fire_dataset/coco.yaml \
+  data=./exports/yolo/fire_dataset/dataset.yaml \
   model=yolov8m.pt \
   epochs=100 imgsz=640 batch=16 device=0
 ```
 
-`coco.yaml` 中**不写** `path` 键，ultralytics 会以该 YAML 所在目录为基准解析
+`dataset.yaml` 中**不写** `path` 键，ultralytics 会以该 YAML 所在目录为基准解析
 `train`/`val`，因此整份导出目录可以直接拷贝或移动到其它机器上使用。
 
 ### 8.4 实例分割导出（yolo-seg）
@@ -293,7 +289,7 @@ docker exec fo-dashboard \
   --overwrite
 ```
 
-导出到 `exports/coco_yaml/...` 之外的默认目录是 `/exports/yolo_seg/<dataset_name>`，
+默认导出目录是 `/exports/yolo_seg/<dataset_name>`，
 结构为 `images/{train,val}` + `labels/{train,val}` + `data.yaml`。
 
 ```bash
@@ -316,7 +312,7 @@ yolo segment train \
 
 | 参数 | 说明 |
 | --- | --- |
-| `--label-field` | 标注字段（`yolo`/`coco`/`coco-yaml` 默认 `ground_truth`，`yolo-seg` 默认 `ground_truth_polygons`） |
+| `--label-field` | 标注字段（`yolo` 默认 `ground_truth`，`yolo-seg` 默认 `ground_truth_polygons`） |
 | `--classes` | 类别列表；不传则自动从数据集推断 |
 | `--train-ratio` / `--val-ratio` | 拆分比例（默认 0.8 / 0.2） |
 | `--seed` | 随机划分种子（默认 42） |
@@ -325,7 +321,7 @@ yolo segment train \
 | `--skip-missing-media` | 跳过源图片缺失的样本，而不是中止导出 |
 
 > 重新导出时务必带 `--overwrite`，否则旧的图片和标注会残留在目录里。
-> `--splits` 对 `yolo` / `coco-yaml` 必须同时包含 `train` 和 `val`，脚本会提前校验。
+> `--splits` 必须同时包含 `train` 和 `val`，脚本会提前校验。
 
 ---
 
