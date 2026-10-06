@@ -18,14 +18,21 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QListWidget, QListWidgetItem,
     QAbstractItemView, QDialog, QScrollArea
 )
-from PySide6.QtCore import Qt, QTimer, Signal, QSize, QMetaObject, Q_ARG, Slot
+from PySide6.QtCore import Qt, Signal, QSize, QMetaObject, Q_ARG, Slot
 from PySide6.QtGui import QFont, QPalette, QColor, QIcon, QAction, QPixmap, QImage
 
 
 # ============================================
 # YOLO训练线程（支持YOLOv8、YOLO11和YOLOv26）
 # ============================================
-from gui.threads.yolo_training_thread import YOLOTrainingThread
+from gui.threads.yolo_training_thread import (
+    YOLOTrainingThread,
+    YOLOValidationThread,
+    find_best_weights,
+    normalize_family,
+    task_of_model_type,
+    weight_filename,
+)
 from gui.threads.yolo_inference_threads import YOLOInferenceThread, SAM3InferenceThread
 from gui.widgets.class_editor_dialog import ClassEditorDialog
 from gui.utils.class_file_loader import CLASS_FILE_FILTER, default_dir, load_classes
@@ -262,6 +269,10 @@ class YOLOConfigWidget(QWidget):
         
         # 第四行：数据增强、早停机制、早停耐心值
         self.augmentation_check = QCheckBox("数据增强")
+        self.augmentation_check.setToolTip(
+            "勾选后启用 ultralytics 默认训练增强（HSV、平移、缩放、左右翻转、马赛克）；\n"
+            "取消勾选则全部关闭（mosaic/flip/HSV 均为 0）"
+        )
         self.augmentation_check.setChecked(True)
         
         self.early_stopping_check = QCheckBox("早停机制")
@@ -2554,6 +2565,7 @@ class YOLOTrainerGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.training_thread = None
+        self.validation_thread = None
         # 创建配置保存目录
         os.makedirs(self.AUTO_CONFIG_DIR, exist_ok=True)
         self.init_ui()
@@ -2941,16 +2953,18 @@ class YOLOTrainerGUI(QMainWindow):
         model_family = config['model']['family']
         model_type = config['model']['type']
         task = config['model']['task']
+        # 官方资产名与任务均按模型名归一化（yolov11m-seg -> yolo11m-seg / segment）
+        weight_file = weight_filename(model_type, normalize_family(model_family))
+        model_task = task_of_model_type(model_type)
         
         api_code = f"""# {model_family.upper()}训练Python API调用示例
 
-# 1. 加载模型
-model = YOLO("{model_type}.pt")
+# 1. 加载模型（任务交给构造函数，与 CLI 的 `yolo segment train` 一致）
+model = YOLO("{weight_file}", task="{model_task}")
 
 # 2. 准备训练参数
 train_args = {{
     'data': 'data_config.yaml',  # 数据配置文件
-    'task': '{task}',  # 任务类型
     'epochs': {config['training']['epochs']},
     'batch': {config['training']['batch_size']},
     'imgsz': {config['model']['input_size']},
@@ -2958,26 +2972,25 @@ train_args = {{
     'optimizer': "{config['training']['optimizer']}",
     'weight_decay': {config['training']['weight_decay']},
     'warmup_epochs': {config['training']['warmup_epochs']},
-    'augment': {config['training']['augmentation']},
+    # 训练增强（注意：'augment' 是验证时 TTA，不是训练增强）
+    'mosaic': {1.0 if config['training']['augmentation'] else 0.0},
+    'fliplr': {0.5 if config['training']['augmentation'] else 0.0},
+    'hsv_h': {0.015 if config['training']['augmentation'] else 0.0},
+    'hsv_s': {0.7 if config['training']['augmentation'] else 0.0},
+    'hsv_v': {0.4 if config['training']['augmentation'] else 0.0},
     'project': "{config['model']['save_dir']}",
     'name': "{config['model']['weight_name']}",
     'exist_ok': True,
     'save_period': 10
 }}
 
-# 3. {model_family.upper()}特有参数
+# 3. 通用附加参数
 """
         
-        if model_family == "yolov8":
-            api_code += f"""train_args.update({{
+        api_code += f"""train_args.update({{
     'cos_lr': {config['training'].get('cos_lr', True)},
-    'label_smoothing': {config['training'].get('label_smoothing', 0.0)}
-}})
-"""
-        else:  # yolov11
-            api_code += f"""train_args.update({{
-    'close_mosaic': {config['training'].get('close_mosaic', 10)},
-    'mixup': {config['training'].get('mixup', 0.0)}
+    'label_smoothing': {config['training'].get('label_smoothing', 0.0)},
+    'close_mosaic': {config['training'].get('close_mosaic', 10)}
 }})
 """
         
@@ -3001,88 +3014,53 @@ results = model.train(**train_args)"""
             self.monitor_widget.add_log("API调用示例已复制到剪贴板", "SUCCESS")
     
     def show_model_comparison(self):
-        """显示YOLOv8、YOLOv11和YOLOv26的对比信息"""
+        """显示各系列的事实性对比（命名/任务覆盖/选型建议，不含编造的百分比）"""
         comparison_text = """
-        <h2>YOLOv8 、YOLOv11 与 YOLOv26 对比</h2>
+        <h2>YOLOv8 / YOLO11 / YOLO26 对比</h2>
         
-        <h3>YOLOv8 特性:</h3>
+        <h3>最容易踩坑的是命名:</h3>
         <ul>
-            <li><b>成熟稳定</b>: 经过广泛验证的架构</li>
-            <li><b>多任务支持</b>: 检测、分割、分类、姿态估计</li>
-            <li><b>丰富的预训练模型</b>: 大量社区贡献的权重</li>
-            <li><b>广泛兼容性</b>: 支持多种部署格式</li>
-            <li><b>余弦学习率调度</b>: 更好的收敛性</li>
-            <li><b>标签平滑</b>: 防止过拟合</li>
+            <li><b>YOLOv8</b>: <code>yolov8n.pt / yolov8m-seg.pt / yolov8n-cls.pt</code></li>
+            <li><b>YOLO11</b>: <code>yolo11n.pt / yolo11m-seg.pt / yolo11n-cls.pt</code>
+                —— 官方名称是 <b>yolo11*</b>，没有 yolov11*</li>
+            <li><b>YOLO26</b>: <code>yolo26n.pt / yolo26m-seg.pt / yolo26n-cls.pt</code>
+                —— 官方名称是 <b>yolo26*</b>，没有 yolov26*</li>
         </ul>
+        <p>本工具会自动把界面里的 <code>yolov11*</code>/<code>yolov26*</code> 转成官方名称后
+        再加载/下载，无需手动改名。</p>
         
-        <h3>YOLO11 特性:</h3>
-        <ul>
-            <li><b>最新架构</b>: 基于最新研究的改进</li>
-            <li><b>性能优化</b>: 更快的推理速度</li>
-            <li><b>改进的骨干网络</b>: 更好的特征提取</li>
-            <li><b>先进的数据增强</b>: MixUp、Copy-Paste等</li>
-            <li><b>马赛克增强控制</b>: 可配置的马赛克增强</li>
-            <li><b>更好的小目标检测</b>: 改进的特征金字塔</li>
-        </ul>
-        
-        <h3>YOLOv26 特性 (最新版本):</h3>
-        <ul>
-            <li><b>尖端架构</b>: 最新的深度学习研究成果</li>
-            <li><b>卓越性能</b>: 推理速度提升20%，精度提升5%</li>
-            <li><b>高级数据增强</b>: HSV增强、几何变换、马赛克优化</li>
-            <li><b>优化的骨干网络</b>: 更好的多尺度特征提取</li>
-            <li><b>低显存占用</b>: 相比YOLO11降低15%显存需求</li>
-            <li><b>增强的鲁棒性</b>: 更好的泛化能力和鲁棒性</li>
-            <li><b>灵活的训练模式</b>: 矩形训练、数据缓存等高级功能</li>
-        </ul>
-        
-        <h3>性能对比表:</h3>
+        <h3>任务覆盖（按本地 ultralytics 内置配置整理）:</h3>
         <table border="1" cellspacing="5" cellpadding="5">
-            <tr>
-                <th>指标</th>
-                <th>YOLOv8</th>
-                <th>YOLOv11</th>
-                <th>YOLOv26</th>
-            </tr>
-            <tr>
-                <td><b>推理速度</b></td>
-                <td>基准</td>
-                <td>快15%</td>
-                <td>快20% ⚡</td>
-            </tr>
-            <tr>
-                <td><b>检测精度</b></td>
-                <td>基准</td>
-                <td>高3%</td>
-                <td>高5% 📈</td>
-            </tr>
-            <tr>
-                <td><b>显存占用</b></td>
-                <td>基准</td>
-                <td>同等</td>
-                <td>低15% 💾</td>
-            </tr>
-            <tr>
-                <td><b>收敛速度</b></td>
-                <td>基准</td>
-                <td>快10%</td>
-                <td>快25% ⚙️</td>
-            </tr>
-            <tr>
-                <td><b>小目标检测</b></td>
-                <td>一般</td>
-                <td>较好</td>
-                <td>优秀 🎯</td>
-            </tr>
+            <tr><th>系列</th><th>检测</th><th>实例分割</th><th>分类</th><th>其它内置配置</th></tr>
+            <tr><td>YOLOv8</td><td>✅</td><td>✅</td><td>✅</td>
+                <td>pose、obb、world、rtdetr、ghost、p2/p6</td></tr>
+            <tr><td>YOLO11</td><td>✅</td><td>✅</td><td>✅</td>
+                <td>pose、obb、cls-resnet18</td></tr>
+            <tr><td>YOLO26</td><td>✅</td><td>✅</td><td>✅</td>
+                <td>pose、obb、depth、sem、p2/p6</td></tr>
         </table>
+        <p>本 GUI 目前提供 <b>检测 / 分割 / 分类</b> 三种任务的训练入口，其余任务可用命令行
+        （如 <code>yolo pose train ...</code>）。</p>
         
         <h3>选择建议:</h3>
         <ul>
-            <li><b>选择YOLOv8如果</b>: 需要稳定性和广泛兼容性</li>
-            <li><b>选择YOLOv11如果</b>: 追求最新技术和更好性能</li>
-            <li><b>选择YOLOv26如果</b>: 追求最强性能、最低显存、最快收敛 ⭐ <b>推荐</b></li>
-            <li><b>硬件要求</b>: YOLOv26显存需求最低，性能最优</li>
-            <li><b>部署考虑</b>: YOLOv26性能和效率最均衡</li>
+            <li><b>YOLOv8</b>: 生态与教程最多、社区权重最全，遇到问题最容易查到资料，适合作为基线。</li>
+            <li><b>YOLO11</b>: 在 v8 基础上更换了骨干与特征融合模块，官方定位为更新的通用系列。</li>
+            <li><b>YOLO26</b>: 官方定位为最新系列，任务配置覆盖更广（多了 depth/sem 等）。</li>
+            <li><b>选型方法</b>: 用同一数据集/同一尺寸各跑一遍，比较验证集指标与推理耗时后再决定。</li>
+        </ul>
+        
+        <h3>关于性能数字:</h3>
+        <p>精度/速度/显存占用取决于模型尺寸、任务、输入尺寸与数据集，不同硬件上差异很大。
+        本工具不再给出估算百分比，请以官方文档和你自己的实测为准——训练完成后可以用菜单
+        “工具 → 快速测试”得到真实权重在你测试集上的指标。</p>
+        
+        <h3>小结:</h3>
+        <ul>
+            <li>先用 YOLOv8 跑通全流程并作为基线，需要更新的系列时再切到 YOLO11 / YOLO26
+                （首次运行会自动下载对应权重）。</li>
+            <li>跨系列比较时请固定模型尺寸（例如都用 m）与输入尺寸，结果才有可比性。</li>
+            <li>具体指标以你验证集/测试集上的实测为准，本界面不做估算。</li>
         </ul>
         """
         
@@ -3160,8 +3138,11 @@ results = model.train(**train_args)"""
     def stop_training(self):
         """停止训练"""
         if self.training_thread:
-            self.training_thread.stop()
-            self.training_thread.wait()
+            self.training_thread.stop()          # 请求停止：ultralytics 会在批次边界退出
+            if not self.training_thread.wait(5000):   # 不要无超时地阻塞 UI 线程
+                self.monitor_widget.add_log(
+                    "停止请求已发出，正在等待当前批次结束（权重会正常保存）…", "WARNING"
+                )
             
         self.start_train_btn.setEnabled(True)
         self.stop_train_btn.setEnabled(False)
@@ -3209,7 +3190,12 @@ results = model.train(**train_args)"""
         
         self.status_progress.setVisible(False)
         
-        if success:
+        if success and getattr(self.training_thread, "stop_requested", False):
+            # 用户主动停止：不是失败，也不该弹“训练成功”对话框
+            self.monitor_widget.set_status("已停止", "red")
+            self.monitor_widget.add_log(message, "WARNING")
+            self.status_label.setText("训练已停止")
+        elif success:
             self.monitor_widget.set_status("训练完成", "blue")
             self.monitor_widget.add_log(f"训练成功: {message}", "SUCCESS")
             self.status_label.setText("训练完成")
@@ -3228,47 +3214,85 @@ results = model.train(**train_args)"""
         self.monitor_widget.add_log(f"检查点已保存: {checkpoint_name}", "INFO")
     
     def quick_test(self):
-        """快速测试"""
-        config = self.config_widget.get_config()
-        
-        test_path = config["dataset"]["test"]
-        if not test_path or not os.path.exists(test_path):
-            self.monitor_widget.add_log("测试路径无效或为空，无法进行测试", "ERROR")
-            QMessageBox.warning(self, "警告", "请先设置有效的测试数据路径")
+        """快速测试：用训练好的权重在测试集（缺省为验证集）上跑真实评估"""
+        if self.validation_thread is not None and self.validation_thread.isRunning():
+            self.monitor_widget.add_log("评估已在进行中，请等它结束", "WARNING")
             return
-        
+
+        config = self.config_widget.get_config()
+        test_path = config["dataset"]["test"]
+        val_path = config["dataset"]["val"]
+        if not ((test_path and os.path.exists(test_path)) or (val_path and os.path.exists(val_path))):
+            message = "测试集与验证集都未配置（或路径不存在），无法评估"
+            self.monitor_widget.add_log(message, "ERROR")
+            self.status_label.setText("未配置数据集，无法评估")
+            QMessageBox.warning(self, "警告", message)
+            return
+
+        weights = self.current_weights(config)
+        if not weights:
+            message = (
+                "未找到可用的权重文件。请先完成训练，\n"
+                "或把 best.pt 放到 <模型保存路径>/<权重名称>/weights/ 下。"
+            )
+            self.monitor_widget.add_log(message, "ERROR")
+            self.status_label.setText("未找到权重，评估未开始")
+            QMessageBox.warning(self, "警告", message)
+            return
+
         self.tab_widget.setCurrentIndex(1)
-        
-        self.monitor_widget.add_log("开始快速测试...", "INFO")
-        self.monitor_widget.add_log(f"测试路径: {test_path}", "INFO")
-        
+        self.monitor_widget.add_log("开始评估（真实权重 + 真实标注）...", "INFO")
+        self.monitor_widget.add_log(f"权重: {weights}", "INFO")
+        self.monitor_widget.add_log(
+            f"测试集: {test_path or '（未设置，将使用验证集）'}", "INFO"
+        )
+
         self.status_progress.setVisible(True)
-        self.status_progress.setValue(0)
-        
-        QTimer.singleShot(2000, lambda: self.finish_test(test_path))
-        
-        self.status_label.setText("测试进行中...")
-    
-    def finish_test(self, test_path):
-        """完成测试"""
-        import random
-        precision = 0.85 + random.random() * 0.1
-        recall = 0.82 + random.random() * 0.1
-        map_score = 0.87 + random.random() * 0.08
-        
-        self.monitor_widget.add_log(f"测试完成: {test_path}", "SUCCESS")
-        self.monitor_widget.add_log(f"精度: {precision:.4f}, 召回率: {recall:.4f}, mAP: {map_score:.4f}", "INFO")
-        
+        self.status_progress.setRange(0, 0)   # 不确定进度：不伪造百分比
+        self.start_train_btn.setEnabled(False)
+        self.status_label.setText("评估进行中...")
+
+        self.validation_thread = YOLOValidationThread(weights, config)
+        self.validation_thread.log_signal.connect(self.handle_training_log)
+        self.validation_thread.val_complete_signal.connect(self.handle_validation_complete)
+        self.validation_thread.start()
+
+    def current_weights(self, config):
+        """优先用本次训练刚产出的权重，其次按保存目录约定查找"""
+        candidates = []
+        trainer = getattr(getattr(self.training_thread, "model", None), "trainer", None)
+        for attr in ("best", "last"):
+            path = getattr(trainer, attr, None)
+            if path:
+                candidates.append(str(path))
+        return find_best_weights(config, candidates)
+
+    @Slot(bool, dict)
+    def handle_validation_complete(self, success, info):
+        """处理评估完成"""
         self.status_progress.setVisible(False)
-        self.status_label.setText("测试完成")
-        
+        self.status_progress.setRange(0, 100)
+        self.start_train_btn.setEnabled(True)
+
+        if not success:
+            self.monitor_widget.set_status("评估失败", "red")
+            self.monitor_widget.add_log(f"评估失败: {info.get('error', '未知错误')}", "ERROR")
+            self.status_label.setText("评估失败")
+            return
+
+        metrics = info.get("metrics", {})
+        lines = "\n".join(f"{key}: {value:.4f}" for key, value in metrics.items())
+        speed = info.get("speed", {})
+        if speed:
+            lines += "\n" + "  ".join(f"{key}: {value:.1f}ms" for key, value in speed.items())
+
+        self.monitor_widget.set_status("评估完成", "blue")
+        self.monitor_widget.add_log(f"评估指标:\n{lines}", "SUCCESS")
+        self.status_label.setText("评估完成")
         QMessageBox.information(
-            self, "测试结果",
-            f"测试完成!\n\n"
-            f"测试路径: {test_path}\n"
-            f"精度: {precision:.4f}\n"
-            f"召回率: {recall:.4f}\n"
-            f"mAP: {map_score:.4f}"
+            self, "评估结果",
+            f"权重: {info.get('weights')}\n"
+            f"数据划分: {info.get('split')}\n\n{lines}"
         )
     
     def export_yolo_format(self):
