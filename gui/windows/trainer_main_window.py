@@ -4,6 +4,7 @@ import yaml
 import json
 import threading
 import subprocess
+import shutil
 from pathlib import Path
 from datetime import datetime
 
@@ -2685,12 +2686,19 @@ class YOLOTrainerGUI(QMainWindow):
         self.generate_cmd_btn.clicked.connect(self.show_api_call)
         button_layout.addWidget(self.generate_cmd_btn)
         
-        # 数据标注
-        self.labeling_btn = QPushButton("📝 数据标注")
+        # 数据标注（LabelImg）
+        self.labeling_btn = QPushButton("📝 打开LabelImg")
         self.labeling_btn.setMinimumHeight(38)
         self.labeling_btn.setToolTip("打开LabelImg工具进行数据标注")
         self.labeling_btn.clicked.connect(self.open_labeling_tool)
         button_layout.addWidget(self.labeling_btn)
+        
+        # 数据标注（X-AnyLabeling）
+        self.anylabeling_btn = QPushButton("🏷 打开Anylabeling")
+        self.anylabeling_btn.setMinimumHeight(38)
+        self.anylabeling_btn.setToolTip("通过 xanylabeling 命令打开X-AnyLabeling标注工具")
+        self.anylabeling_btn.clicked.connect(self.open_anylabeling_tool)
+        button_layout.addWidget(self.anylabeling_btn)
         
         button_layout.addStretch()
         
@@ -3478,6 +3486,47 @@ results = model.train(**train_args)"""
         except Exception as e:
             QMessageBox.critical(self, "错误", f"启动LabelImg失败: {str(e)}")
             self.monitor_widget.add_log(f"启动LabelImg失败: {str(e)}", "ERROR")
+    
+    @staticmethod
+    def find_xanylabeling_command():
+        """查找X-AnyLabeling的xanylabeling可执行命令，未找到时返回None"""
+        if os.name == 'nt':
+            # Windows下可执行脚本位于Python所在目录的Scripts子目录中
+            candidates = [
+                os.path.join(os.path.dirname(sys.executable), 'Scripts', name)
+                for name in ('xanylabeling.exe', 'xanylabeling.bat', 'xanylabeling.cmd')
+            ]
+        else:
+            # Linux/macOS下可执行脚本与Python位于同一目录
+            candidates = [os.path.join(os.path.dirname(sys.executable), 'xanylabeling')]
+        
+        # 优先使用当前Python环境中的命令，避免多环境PATH冲突
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return candidate
+        
+        return shutil.which('xanylabeling')
+    
+    def open_anylabeling_tool(self):
+        """通过xanylabeling命令打开X-AnyLabeling数据标注工具"""
+        try:
+            xanylabeling_cmd = self.find_xanylabeling_command()
+            if not xanylabeling_cmd:
+                QMessageBox.warning(
+                    self, "错误",
+                    "找不到 xanylabeling 命令，请先安装X-AnyLabeling：\n"
+                    "pip install anylabeling"
+                )
+                self.monitor_widget.add_log("找不到xanylabeling命令，请确认已安装X-AnyLabeling", "ERROR")
+                return
+            
+            # 启动X-AnyLabeling
+            self.monitor_widget.add_log("正在启动X-AnyLabeling数据标注工具...", "INFO")
+            subprocess.Popen([xanylabeling_cmd])
+            
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"启动X-AnyLabeling失败: {str(e)}")
+            self.monitor_widget.add_log(f"启动X-AnyLabeling失败: {str(e)}", "ERROR")
     
     def on_tab_changed(self, index):
         """处理标签页切换"""

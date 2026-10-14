@@ -6,6 +6,7 @@
 - 2）主要支持（YOLOv8、YOLOv11、YOLOv26）这三个版本训练和推理；
 - 3）支持对最新版本SAM3的推理；
 - 4）集成了labelImg标注工具，升级到PySide6界面，并修复了本地化、删除图片跳转索引等问题。
+- 5）操作区提供「📝 打开LabelImg」与「🏷 打开Anylabeling」按钮，可直接启动labelImg或通过 `xanylabeling` 命令启动X-AnyLabeling进行数据标注。
 
 ![alt text](./docs/image.png)
 ![alt text](./docs/image-1.png)
@@ -40,6 +41,7 @@
     - `segment-anything` - Meta原始SAM模型支持
     - `open_clip_torch` - CLIP文字提示支持
     - `transformers` - HuggingFace模型支持
+    - `anylabeling` - X-AnyLabeling标注工具（安装后提供 `xanylabeling` 命令，「🏷 打开Anylabeling」按钮依赖该命令）
 
 - 快速运行
   1. 激活或创建合适的 Python 环境，并安装依赖：
