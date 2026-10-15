@@ -2567,6 +2567,8 @@ class YOLOTrainerGUI(QMainWindow):
         super().__init__()
         self.training_thread = None
         self.validation_thread = None
+        # 相似图像处理窗口（仿 AntiDupl，仅保留 SSIM 比较），首次点击按钮时创建
+        self.similar_image_window = None
         # 创建配置保存目录
         os.makedirs(self.AUTO_CONFIG_DIR, exist_ok=True)
         self.init_ui()
@@ -2699,6 +2701,13 @@ class YOLOTrainerGUI(QMainWindow):
         self.anylabeling_btn.setToolTip("通过 xanylabeling 命令打开X-AnyLabeling标注工具")
         self.anylabeling_btn.clicked.connect(self.open_anylabeling_tool)
         button_layout.addWidget(self.anylabeling_btn)
+        
+        # 相似图像处理（仿 AntiDupl，仅保留 SSIM 比较）
+        self.similar_image_btn = QPushButton("🔍 相似图像处理")
+        self.similar_image_btn.setMinimumHeight(38)
+        self.similar_image_btn.setToolTip("基于 SSIM 查找相似/重复图片（仿 AntiDupl）")
+        self.similar_image_btn.clicked.connect(self.open_similar_image_tool)
+        button_layout.addWidget(self.similar_image_btn)
         
         button_layout.addStretch()
         
@@ -3539,6 +3548,7 @@ results = model.train(**train_args)"""
             self.generate_cmd_btn.setVisible(False)
             self.start_train_btn.setVisible(False)
             self.stop_train_btn.setVisible(False)
+            self.similar_image_btn.setVisible(False)
         else:
             # 显示底部按钮
             self.validate_btn.setVisible(True)
@@ -3547,6 +3557,35 @@ results = model.train(**train_args)"""
             self.generate_cmd_btn.setVisible(True)
             self.start_train_btn.setVisible(True)
             self.stop_train_btn.setVisible(True)
+            self.similar_image_btn.setVisible(True)
+    
+    def open_similar_image_tool(self):
+        """打开「相似图像处理」窗口（基于 SSIM 查找相似/重复图片，仿 AntiDupl）"""
+        from gui.widgets.similar_image_window import SimilarImageWindow
+        
+        if self.similar_image_window is None:
+            self.similar_image_window = SimilarImageWindow(self)
+            self.similar_image_window.files_removed.connect(self.on_similar_files_removed)
+            self._preset_similar_search_dirs()
+        
+        self.similar_image_window.show()
+        self.similar_image_window.raise_()
+        self.similar_image_window.activateWindow()
+        self.status_label.setText("已打开相似图像处理窗口")
+        self.monitor_widget.add_log("已打开相似图像处理窗口（SSIM 相似/重复图片查找）", "INFO")
+    
+    def _preset_similar_search_dirs(self):
+        """首次打开相似图像处理窗口时，用数据集目录预填搜索目录"""
+        config = self.config_widget.get_config()
+        for key in ("train", "val"):
+            path = config["dataset"].get(key)
+            if path and os.path.isdir(path):
+                self.similar_image_window.add_folder_path(path)
+    
+    def on_similar_files_removed(self, count):
+        """相似图像处理窗口删除文件后的状态反馈"""
+        self.status_label.setText(f"相似图像处理：已删除 {count} 个文件")
+        self.monitor_widget.add_log(f"相似图像处理：已删除 {count} 个文件", "SUCCESS")
     
     def closeEvent(self, event):
         """窗口关闭事件"""
@@ -3563,11 +3602,18 @@ results = model.train(**train_args)"""
             if reply == QMessageBox.Yes:
                 self.training_thread.stop()
                 self.training_thread.wait()
+                self._shutdown_similar_image_tool()
                 event.accept()
             else:
                 event.ignore()
         else:
+            self._shutdown_similar_image_tool()
             event.accept()
+    
+    def _shutdown_similar_image_tool(self):
+        """关闭相似图像处理窗口并停止其后台搜索线程"""
+        if self.similar_image_window is not None:
+            self.similar_image_window.close()
 
 
 def main():
